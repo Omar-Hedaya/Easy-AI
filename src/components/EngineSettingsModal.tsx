@@ -145,16 +145,12 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
                   <span className="text-slate-400">Direct inference + 404 auto-retry</span>
                 </div>
                 <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-amber-800/40">
-                  <span className="text-amber-300 font-bold">2. Tier 1: Groq Cloud API</span>
-                  <span className="text-slate-400">llama-3.3-70b-versatile / 8b-instant</span>
+                  <span className="text-amber-300 font-bold">2. Tier 1: Groq Dynamic Cascade</span>
+                  <span className="text-slate-400">llama-3.3-70b → 8b-instant → gpt-oss-120b → qwen3.8-27b</span>
                 </div>
                 <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-purple-800/40">
-                  <span className="text-purple-300 font-bold">3. Tier 2: OpenRouter API</span>
-                  <span className="text-slate-400">deepseek/deepseek-chat</span>
-                </div>
-                <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-emerald-800/40">
-                  <span className="text-emerald-300 font-bold">4. Tier 3: OpenRouter Free Models</span>
-                  <span className="text-slate-400">gemini-2.0-flash-exp:free / llama-3.3:free</span>
+                  <span className="text-purple-300 font-bold">3. Tier 2: OpenRouter Dynamic Cascade</span>
+                  <span className="text-slate-400">deepseek-chat → gemini-2.0-flash → llama-3.3-70b → mistral-7b</span>
                 </div>
               </div>
             </div>

@@ -55,25 +55,24 @@ export interface DirectApiResult<T = string> {
   fallbackNotice?: string;
 }
 
-export const GROQ_DEFAULT_MODELS = [
+export const GROQ_CANDIDATE_MODELS = [
   'llama-3.3-70b-versatile',
-  'openai/gpt-oss-120b',
   'llama-3.1-8b-instant',
+  'openai/gpt-oss-120b',
+  'qwen/qwen3.8-27b',
 ];
 
-export const OPENROUTER_TIER2_MODELS = [
+export const GROQ_DEFAULT_MODELS = GROQ_CANDIDATE_MODELS;
+
+export const OPENROUTER_FALLBACK_MODELS = [
   'deepseek/deepseek-chat',
-  'google/gemini-2.0-flash-exp:free',
-];
-
-export const OPENROUTER_TIER3_FREE_MODELS = [
   'google/gemini-2.0-flash-exp:free',
   'meta-llama/llama-3.3-70b-instruct:free',
-  'deepseek/deepseek-chat',
-  'meta-llama/llama-3.1-8b-instruct:free',
+  'mistralai/mistral-7b-instruct:free',
 ];
 
-export const OPENROUTER_FALLBACK_MODELS = OPENROUTER_TIER3_FREE_MODELS;
+export const OPENROUTER_TIER2_MODELS = OPENROUTER_FALLBACK_MODELS;
+export const OPENROUTER_TIER3_FREE_MODELS = OPENROUTER_FALLBACK_MODELS;
 
 /**
  * Resolves Groq API Key from:
@@ -293,13 +292,16 @@ export function convertMessagesToOpenAIFormat(
 export const convertMessagesToOpenRouterFormat = convertMessagesToOpenAIFormat;
 
 /**
- * Tier 1 Failover: Executes chat completion request via Groq Cloud API.
- * Endpoint: https://api.groq.com/openai/v1/chat/completions
- * Models: llama-3.3-70b-versatile, openai/gpt-oss-120b, llama-3.1-8b-instant
+ * Tier 1 Failover: Executes chat completion request via Groq Cloud API with dynamic internal model switching.
+ * Candidate models in order of capability:
+ * ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b']
+ * If Groq returns HTTP 429 (Rate Limit), 503 (Server High Load/Over capacity), or latency timeout,
+ * it automatically rotates to the next available model in the array without aborting.
  */
 export async function callGroqApi(params: {
   messages: any[];
   model?: string;
+  candidateModels?: string[];
   groqKey?: string;
   responseFormatJson?: boolean;
 }): Promise<{ content: string; modelUsed: string }> {
@@ -308,9 +310,11 @@ export async function callGroqApi(params: {
     throw new Error('Groq API Key is not configured (check VITE_GROQ_API_KEY or localStorage "groq_api_key").');
   }
 
-  const modelsToTry = params.model
-    ? [params.model, ...GROQ_DEFAULT_MODELS.filter((m) => m !== params.model)]
-    : GROQ_DEFAULT_MODELS;
+  const modelsToTry = params.candidateModels
+    ? params.candidateModels
+    : params.model
+    ? [params.model, ...GROQ_CANDIDATE_MODELS.filter((m) => m !== params.model)]
+    : GROQ_CANDIDATE_MODELS;
 
   const endpoint = 'https://api.groq.com/openai/v1/chat/completions';
   let lastError: any = null;
@@ -339,9 +343,16 @@ export async function callGroqApi(params: {
     };
   });
 
-  for (const modelCandidate of modelsToTry) {
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const modelCandidate = modelsToTry[i];
+    const isLast = i === modelsToTry.length - 1;
+
     try {
-      console.log(`[Groq API] Attempting chat completion with model "${modelCandidate}" at ${endpoint}...`);
+      console.log(`[Groq API Dynamic Cascade] Attempting model [${i + 1}/${modelsToTry.length}]: "${modelCandidate}" at ${endpoint}...`);
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 18000); // 18s model latency timeout
+
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
@@ -358,11 +369,17 @@ export async function callGroqApi(params: {
         bodyPayload.response_format = { type: 'json_object' };
       }
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(bodyPayload),
-      });
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(bodyPayload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
@@ -373,10 +390,18 @@ export async function callGroqApi(params: {
             detailedError = parsed.error.message;
           }
         } catch {}
+
         console.error(
           `[Groq API Error] ❌ Model "${modelCandidate}" returned HTTP ${response.status}: ${detailedError}`
         );
         lastError = new Error(`Groq API error on model "${modelCandidate}" (HTTP ${response.status}): ${detailedError}`);
+
+        if (!isLast) {
+          console.warn(
+            `[Groq Dynamic Switching] 🔄 Model "${modelCandidate}" encountered HTTP ${response.status}. Automatically cascading to next Groq candidate: "${modelsToTry[i + 1]}"...`
+          );
+          continue;
+        }
         continue;
       }
 
@@ -388,18 +413,28 @@ export async function callGroqApi(params: {
         modelUsed: modelCandidate,
       };
     } catch (err: any) {
-      console.error(`[Groq API Network/Execution Error] ❌ Error executing model "${modelCandidate}":`, err);
+      const isTimeout = err?.name === 'AbortError' || err?.message?.includes('timeout') || err?.message?.includes('aborted');
+      const reason = isTimeout ? 'Latency timeout (18s)' : (err?.message || err);
+      console.error(`[Groq API Execution Error] ❌ Model "${modelCandidate}" failed: ${reason}`);
       lastError = err;
+
+      if (!isLast) {
+        console.warn(
+          `[Groq Dynamic Switching] 🔄 Model "${modelCandidate}" failed (${reason}). Automatically rotating to next Groq candidate: "${modelsToTry[i + 1]}"...`
+        );
+        continue;
+      }
     }
   }
 
-  throw lastError || new Error('Failed to obtain response from Groq Cloud models.');
+  throw lastError || new Error('All Groq candidate models failed to produce a response.');
 }
 
 /**
- * Tier 2 & Tier 3 Failover: Executes chat completion request via OpenRouter API with automated model fallback chain.
- * Endpoint: https://openrouter.ai/api/v1/chat/completions
- * Headers: HTTP-Referer, X-Title: Easy-AI, Authorization: Bearer <KEY>
+ * Tier 2 & Tier 3 Failover: Executes chat completion request via OpenRouter API with dynamic internal model switching.
+ * High-availability fallback array:
+ * ['deepseek/deepseek-chat', 'google/gemini-2.0-flash-exp:free', 'meta-llama/llama-3.3-70b-instruct:free', 'mistralai/mistral-7b-instruct:free']
+ * If an OpenRouter endpoint/model returns 429, 502, 503, or rate exhaustion, it immediately rotates to the next model in the list.
  */
 export async function callOpenRouterApi(params: {
   messages: any[];
@@ -412,16 +447,24 @@ export async function callOpenRouterApi(params: {
   const modelsToTry = params.candidateModels
     ? params.candidateModels
     : params.model
-    ? [params.model, ...OPENROUTER_TIER2_MODELS.filter((m) => m !== params.model)]
-    : OPENROUTER_TIER2_MODELS;
+    ? [params.model, ...OPENROUTER_FALLBACK_MODELS.filter((m) => m !== params.model)]
+    : OPENROUTER_FALLBACK_MODELS;
 
   const endpoint = 'https://openrouter.ai/api/v1/chat/completions';
   const referer = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : 'https://easy-ai.app';
 
   let lastError: any = null;
 
-  for (const modelCandidate of modelsToTry) {
+  for (let i = 0; i < modelsToTry.length; i++) {
+    const modelCandidate = modelsToTry[i];
+    const isLast = i === modelsToTry.length - 1;
+
     try {
+      console.log(`[OpenRouter Dynamic Cascade] Attempting model [${i + 1}/${modelsToTry.length}]: "${modelCandidate}" at ${endpoint}...`);
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 22000); // 22s model latency timeout
+
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'HTTP-Referer': referer,
@@ -441,32 +484,63 @@ export async function callOpenRouterApi(params: {
         bodyPayload.response_format = { type: 'json_object' };
       }
 
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(bodyPayload),
-      });
+      let response: Response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(bodyPayload),
+          signal: controller.signal,
+        });
+      } finally {
+        clearTimeout(timeoutId);
+      }
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
-        console.warn(`[OpenRouter] Model ${modelCandidate} returned HTTP ${response.status}: ${errText}`);
-        lastError = new Error(`OpenRouter (${modelCandidate}) HTTP ${response.status}: ${errText}`);
+        let detailedError = errText;
+        try {
+          const parsed = JSON.parse(errText);
+          if (parsed?.error?.message) {
+            detailedError = parsed.error.message;
+          }
+        } catch {}
+
+        console.warn(`[OpenRouter API Error] ⚠️ Model ${modelCandidate} returned HTTP ${response.status}: ${detailedError}`);
+        lastError = new Error(`OpenRouter (${modelCandidate}) HTTP ${response.status}: ${detailedError}`);
+
+        if (!isLast) {
+          console.warn(
+            `[OpenRouter Dynamic Switching] 🔄 Model "${modelCandidate}" hit HTTP ${response.status}. Automatically cascading to next OpenRouter model: "${modelsToTry[i + 1]}"...`
+          );
+          continue;
+        }
         continue;
       }
 
       const data = await response.json();
       const content = data?.choices?.[0]?.message?.content || '';
+      console.log(`[OpenRouter API Success] ✅ Model "${modelCandidate}" returned valid response (${content.length} chars).`);
       return {
         content,
         modelUsed: modelCandidate,
       };
     } catch (err: any) {
-      console.warn(`[OpenRouter] Network or execution error on model ${modelCandidate}:`, err);
+      const isTimeout = err?.name === 'AbortError' || err?.message?.includes('timeout') || err?.message?.includes('aborted');
+      const reason = isTimeout ? 'Latency timeout (22s)' : (err?.message || err);
+      console.warn(`[OpenRouter Execution Error] ⚠️ Model ${modelCandidate} failed: ${reason}`);
       lastError = err;
+
+      if (!isLast) {
+        console.warn(
+          `[OpenRouter Dynamic Switching] 🔄 Rotating to next OpenRouter model: "${modelsToTry[i + 1]}"...`
+        );
+        continue;
+      }
     }
   }
 
-  throw lastError || new Error('Failed to obtain response from OpenRouter fallback models.');
+  throw lastError || new Error('All OpenRouter candidate models failed to produce a response.');
 }
 
 export interface MultiTierFailoverResult {
@@ -543,7 +617,7 @@ export async function executeMultiTierFailover(params: {
         provider: 'groq',
         modelUsed: `groq/${res.modelUsed}`,
         tier: 1,
-        notice: 'GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)',
+        notice: `Groq (${res.modelUsed}) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)`,
       };
     } catch (groqErr: any) {
       console.error(
@@ -556,7 +630,8 @@ export async function executeMultiTierFailover(params: {
   }
 
   // ==========================================
-  // TIER 2: OpenRouter API (Primary Models)
+  // TIER 2: OpenRouter API (Dynamic Model Cascade)
+  // Models in order: ['deepseek/deepseek-chat', 'google/gemini-2.0-flash-exp:free', 'meta-llama/llama-3.3-70b-instruct:free', 'mistralai/mistral-7b-instruct:free']
   // ==========================================
   try {
     onFailoverStatus?.(
@@ -572,55 +647,22 @@ export async function executeMultiTierFailover(params: {
     );
     const res = await callOpenRouterApi({
       messages: openRouterMessages,
-      candidateModels: OPENROUTER_TIER2_MODELS,
+      candidateModels: OPENROUTER_FALLBACK_MODELS,
       openRouterKey,
       responseFormatJson,
     });
 
+    console.log(`[Failover Cascade] ✅ OpenRouter Succeeded! Surviving model: ${res.modelUsed}`);
     return {
       content: res.content,
       provider: 'openrouter',
       modelUsed: `openrouter/${res.modelUsed}`,
       tier: 2,
-      notice: 'تم التحويل التلقائي بنجاح إلى OpenRouter (Tier 2) لضمان استمرارية الجلسة',
+      notice: `OpenRouter (${res.modelUsed}) - تم التحويل التلقائي بنجاح إلى OpenRouter`,
     };
   } catch (openRouterErr: any) {
-    console.warn('[Failover Tier 2 (OpenRouter Primary) Failed]:', openRouterErr);
-    failureLog.push(`Tier 2 (OpenRouter Primary): ${openRouterErr.message || openRouterErr}`);
-  }
-
-  // ==========================================
-  // TIER 3: OpenRouter API (Free Fallback Models)
-  // ==========================================
-  try {
-    onFailoverStatus?.(
-      3,
-      'openrouter',
-      '⚡ جاري المتابعة عبر نماذج OpenRouter المجانية البديلة (Tier 3)...'
-    );
-    const openRouterMessages = convertMessagesToOpenAIFormat(
-      messages,
-      systemInstruction,
-      targetLanguage,
-      false
-    );
-    const res = await callOpenRouterApi({
-      messages: openRouterMessages,
-      candidateModels: OPENROUTER_TIER3_FREE_MODELS,
-      openRouterKey,
-      responseFormatJson,
-    });
-
-    return {
-      content: res.content,
-      provider: 'openrouter',
-      modelUsed: `openrouter/${res.modelUsed}`,
-      tier: 3,
-      notice: 'تم إكمال الطلب بنجاح عبر مسار الطوارئ المجاني في OpenRouter (Tier 3)',
-    };
-  } catch (tier3Err: any) {
-    console.warn('[Failover Tier 3 (OpenRouter Free) Failed]:', tier3Err);
-    failureLog.push(`Tier 3 (OpenRouter Free): ${tier3Err.message || tier3Err}`);
+    console.warn('[Failover Tier 2 (OpenRouter) Failed]:', openRouterErr);
+    failureLog.push(`Tier 2 (OpenRouter): ${openRouterErr.message || openRouterErr}`);
   }
 
   throw new Error(

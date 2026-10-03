@@ -241,6 +241,27 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     return content;
   };
 
+  const getSurvivingModelBadge = (msg: ChatMessage): string => {
+    const rawModel = msg.modelUsed || '';
+    if (msg.fallbackProvider === 'groq') {
+      const clean = rawModel
+        .replace(/^groq\//, '')
+        .replace(/-versatile$/, '')
+        .replace(/-instant$/, '')
+        .replace(/^openai\//, '');
+      return `Groq (${clean || 'llama-3.3-70b'})`;
+    }
+    if (msg.fallbackProvider === 'openrouter') {
+      const clean = rawModel
+        .replace(/^openrouter\//, '')
+        .replace(/^[^/]+\//, '')
+        .replace(/:free$/, '')
+        .replace(/-instruct$/, '');
+      return `OpenRouter (${clean || 'deepseek-chat'})`;
+    }
+    return rawModel;
+  };
+
   return (
     <div
       className="relative flex flex-col h-full w-full max-w-6xl mx-auto rounded-none md:rounded-2xl border-0 md:border border-slate-800 bg-slate-950 shadow-2xl overflow-hidden flex-1 min-h-0"
@@ -374,14 +395,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               className={`flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded border shadow-xs ${
                                 msg.fallbackProvider === 'groq'
                                   ? 'bg-amber-950/80 border-amber-500/80 text-amber-200 font-bold shadow-amber-900/40'
-                                  : msg.fallbackTier === 3
-                                  ? 'bg-emerald-950/70 border-emerald-600/50 text-emerald-300'
-                                  : 'bg-purple-950/70 border-purple-600/50 text-purple-300'
+                                  : 'bg-purple-950/80 border-purple-500/80 text-purple-200 font-bold shadow-purple-900/40'
                               }`}
-                              title={msg.fallbackNotice || (msg.fallbackProvider === 'groq' ? 'GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)' : 'Automatic failover triggered')}
+                              title={msg.fallbackNotice || 'Surviving failover model active'}
                             >
-                              <Zap className={`w-2.5 h-2.5 ${msg.fallbackProvider === 'groq' ? 'text-amber-400' : 'text-cyan-400'}`} />
-                              <span>{msg.fallbackProvider === 'groq' ? 'GROQ T1 (Ultra-Fast Active)' : `OpenRouter T${msg.fallbackTier || 2}`}</span>
+                              <Zap className={`w-2.5 h-2.5 ${msg.fallbackProvider === 'groq' ? 'text-amber-400' : 'text-purple-400'}`} />
+                              <span>{getSurvivingModelBadge(msg)}</span>
                             </span>
                           )}
                           {(msg.groundingMetadata || msg.isGrounded) && (
@@ -468,16 +487,16 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             <span className="flex items-center gap-1.5">
                               {msg.fallbackProvider === 'groq' ? (
                                 <span className="text-amber-300 font-extrabold flex items-center gap-1.5">
-                                  <span>GROQ T1 (Ultra-Fast Active)</span>
+                                  <span>{getSurvivingModelBadge(msg)}</span>
                                   <span className="px-1.5 py-0.2 rounded font-mono text-[9px] bg-amber-900/90 text-amber-100 border border-amber-600 font-semibold">
-                                    Tier 1 Priority
+                                    Groq Tier 1 Active
                                   </span>
                                 </span>
                               ) : (
                                 <span className="text-purple-300 font-bold flex items-center gap-1.5">
-                                  <span>OpenRouter Fallback</span>
+                                  <span>{getSurvivingModelBadge(msg)}</span>
                                   <span className="px-1.5 py-0.2 rounded font-mono text-[9px] bg-purple-900/90 text-purple-100 border border-purple-600 font-semibold">
-                                    Tier {msg.fallbackTier || 2}
+                                    OpenRouter Tier 2 Active
                                   </span>
                                 </span>
                               )}
