@@ -1,6 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ExternalKeysConfig } from '../types/chat';
-import { X, ShieldAlert, Cpu, Key, Check, Info } from 'lucide-react';
+import { X, Cpu, Key, Check, Info } from 'lucide-react';
 
 interface EngineSettingsModalProps {
   isOpen: boolean;
@@ -21,6 +21,25 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
   const [groqKey, setGroqKey] = useState(externalKeys.groqKey || '');
   const [saved, setSaved] = useState(false);
 
+  useEffect(() => {
+    setOpenRouterKey(externalKeys.openRouterKey || '');
+    setGroqKey(externalKeys.groqKey || '');
+  }, [externalKeys]);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    if (isOpen) {
+      window.addEventListener('keydown', handleKeyDown);
+    }
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const handleSave = () => {
@@ -36,17 +55,25 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in">
-      <div className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden">
-        
-        {/* Top Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/80">
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm overflow-y-auto"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="engine-settings-title"
+    >
+      <div
+        className="max-h-[90vh] w-full max-w-lg overflow-y-auto rounded-2xl my-auto bg-slate-900 border border-slate-800 shadow-2xl relative flex flex-col"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Sticky Header with visible close button */}
+        <div className="sticky top-0 z-10 flex items-center justify-between px-6 py-4 border-b border-slate-800 bg-slate-950/95 backdrop-blur-md">
           <div className="flex items-center gap-2.5">
             <div className="p-2 rounded-lg bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">
               <Cpu className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="text-sm font-bold text-white">
+              <h3 id="engine-settings-title" className="text-sm font-bold text-white">
                 Robust Gemini Fallback Engine & Resiliency
               </h3>
               <p className="text-[11px] text-slate-400">
@@ -55,15 +82,17 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
             </div>
           </div>
           <button
+            type="button"
             onClick={onClose}
-            className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 cursor-pointer"
+            aria-label="Close"
+            className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
           >
-            <X className="w-4 h-4" />
+            <X className="w-5 h-5" />
           </button>
         </div>
 
         {/* Content */}
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-5 flex-1">
           {/* Active Model & Resiliency Status */}
           <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 text-xs">
             <div className="flex items-center justify-between mb-2">
@@ -101,7 +130,7 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
                 </div>
               </div>
               <div className="text-[10px] text-emerald-400/90 pt-0.5">
-                ✓ Uploaded PDFs & multimodal Base64 inlineData are preserved 100% across every model switch.
+                ✓ Uploaded files & multimodal Base64 inlineData are preserved 100% across every model switch.
               </div>
             </div>
           </div>
@@ -151,15 +180,17 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
           </div>
         </div>
 
-        {/* Bottom Bar */}
-        <div className="px-6 py-3 border-t border-slate-800 bg-slate-950 flex items-center justify-end gap-2">
+        {/* Bottom Bar (Sticky at bottom) */}
+        <div className="sticky bottom-0 z-10 px-6 py-3 border-t border-slate-800 bg-slate-950/95 backdrop-blur-md flex items-center justify-end gap-2">
           <button
+            type="button"
             onClick={onClose}
-            className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-white cursor-pointer"
+            className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
           >
             Cancel
           </button>
           <button
+            type="button"
             onClick={handleSave}
             className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white font-semibold text-xs transition-colors cursor-pointer"
           >
