@@ -1,6 +1,34 @@
 import { CurriculumAnalysisResult } from './themes';
 import { ProcessedFile } from '../utils/fileParser';
 
+export interface GroundingWebSource {
+  uri?: string;
+  title?: string;
+}
+
+export interface GroundingChunk {
+  web?: GroundingWebSource;
+}
+
+export interface GroundingSupport {
+  groundingChunkIndices?: number[];
+  confidenceScores?: number[];
+  segment?: {
+    startIndex?: number;
+    endIndex?: number;
+    text?: string;
+  };
+}
+
+export interface GroundingMetadata {
+  webSearchQueries?: string[];
+  groundingChunks?: GroundingChunk[];
+  groundingSupports?: GroundingSupport[];
+  searchEntryPoint?: {
+    renderedContent?: string;
+  };
+}
+
 export interface ChatMessage {
   id: string;
   role: 'user' | 'model';
@@ -10,10 +38,15 @@ export interface ChatMessage {
   synthesizedDocument?: CurriculumAnalysisResult;
   modelUsed?: string;
   switchedDueTo404?: boolean;
+  switchedDueToDemand?: boolean;
   switchedFrom?: string;
+  failoverReason?: 'high_demand' | 'slow_latency' | 'rate_limit' | 'not_found' | 'server_error';
+  failoverLatencyMs?: number;
   failoverNotice?: string;
   isStreaming?: boolean;
   durationMs?: number;
+  groundingMetadata?: GroundingMetadata;
+  isGrounded?: boolean;
 }
 
 export interface ExternalKeysConfig {

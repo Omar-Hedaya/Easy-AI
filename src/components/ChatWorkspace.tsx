@@ -1,10 +1,11 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types/chat';
-import { ProcessedFile, processUploadedFile, formatBytes } from '../utils/fileParser';
+import { ProcessedFile, processUploadedFile, formatBytes, SUPPORTED_ACCEPT_ATTRIBUTE } from '../utils/fileParser';
 import { CurriculumAnalysisResult, ThemeConfig, TargetLanguage } from '../types/themes';
 import { DocumentCard } from './DocumentCard';
 import { MathView, RichMathText } from '../utils/mathRenderer';
 import { printMessageAsPdf, downloadMessageHtml } from '../utils/messageExporter';
+import { GroundingSourcesView } from './GroundingSourcesView';
 import {
   Send,
   Paperclip,
@@ -31,11 +32,15 @@ import {
   Loader2,
   Layers,
   AlertTriangle,
+  Globe,
+  Atom,
+  Music,
+  Video,
 } from 'lucide-react';
 
 interface ChatWorkspaceProps {
   messages: ChatMessage[];
-  onSendMessage: (content: string, attachments: ProcessedFile[], requestSynthesis: boolean) => void;
+  onSendMessage: (content: string, attachments: ProcessedFile[], requestSynthesis: boolean, searchGrounding?: boolean) => void;
   isLoading: boolean;
   activeTheme: ThemeConfig;
   currentLanguage: TargetLanguage;
@@ -63,6 +68,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const [inputPrompt, setInputPrompt] = useState('');
   const [attachments, setAttachments] = useState<ProcessedFile[]>([]);
   const [requestSynthesis, setRequestSynthesis] = useState(false);
+  const [enableSearchGrounding, setEnableSearchGrounding] = useState(true);
   const [isDragging, setIsDragging] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [showScrollBottomBtn, setShowScrollBottomBtn] = useState(false);
@@ -163,7 +169,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     if (e) e.preventDefault();
     if ((!inputPrompt.trim() && attachments.length === 0) || isLoading) return;
 
-    onSendMessage(inputPrompt, attachments, requestSynthesis);
+    onSendMessage(inputPrompt, attachments, requestSynthesis, enableSearchGrounding);
     setInputPrompt('');
     setAttachments([]);
     if (textareaRef.current) {
@@ -195,6 +201,10 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         return <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />;
       case 'image':
         return <ImageIcon className="w-3.5 h-3.5 text-purple-400" />;
+      case 'audio':
+        return <Music className="w-3.5 h-3.5 text-pink-400" />;
+      case 'video':
+        return <Video className="w-3.5 h-3.5 text-rose-400" />;
       case 'archive':
         return <Archive className="w-3.5 h-3.5 text-amber-400" />;
       default:
@@ -204,26 +214,38 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
   const samplePrompts = [
     {
+      title: 'تدقيق ثوابت CODATA ومعادلات ماكسويل',
+      prompt: 'تحقق لحظياً عبر Google Search من أدق قيم الثوابت الفيزيائية العالمية (Planck constant h, Speed of light c, Elementary charge e, Boltzmann constant k_B) وفق معايير CODATA العالمية، واشرح معادلات ماكسويل الأربعة بصيغتها التفاضلية مع توثيق المصادر.',
+      badge: 'التحقق الأكاديمي المباشر',
+    },
+    {
       title: 'شرح فضاء الحالة وأنظمة التحكم',
       prompt: 'اشرح لي بمثال عملي بالعامية المصرية إزاي بنحول معادلة تفاضلية من الدرجة الثانية لتمثيل فضاء الحالة (State-Space) واشتقاق مصفوفات A و B و C مع صيغة أكرمان للتحكم.',
       badge: 'الهندسة والتحكم',
     },
     {
-      title: 'نظريات التفاضل الشعاعي (Vector Calculus)',
-      prompt: 'لخص لي مبرهنات التكامل الأساسية: Green, Stokes, Gauss Divergence مع صياغة رياضية دقيقة بـ LaTeX ومقارنة أفقية بينهم بدون أي تكرار للمعادلات.',
-      badge: 'الرياضيات المتقدمة',
+      title: 'أحدث التطورات العلمية ونماذج الاستدلال 2026',
+      prompt: 'تحقق لحظياً عبر Google Search من أحدث الابتكارات في نماذج الاستدلال الممتد (Extended Reasoning & Chain-of-Thought) ومقارنة مؤشرات الأداء العلمية على معايير الرياضيات والبرمجة مع توثيق الأوراق البحثية.',
+      badge: 'الابتكارات العلمية الحديثة',
     },
     {
       title: 'حسابات التمريض ومعدلات التسريب الوريدي',
-      prompt: 'اشرح معادلات حساب جرعات أدوية الطوارئ في العناية المركزة، والـ Mean Arterial Pressure (MAP) ومعدل التنقيط gtt/min مع تفسير غازات الدم الشرياني ABG.',
+      prompt: 'اشرح معادلات حساب جرعات أدوية الطوارئ في العناية المركزة، والـ Mean Arterial Pressure (MAP) ومعدل التنقيط gtt/min مع التحقق من المعايير السريرية العالمية.',
       badge: 'التمريض والطب',
     },
-    {
-      title: 'مصفوفات تعقيد الخوارزميات (Big-O)',
-      prompt: 'قارن بين خوارزميات المسارات الأقصر Dijkstra و Bellman-Ford و Floyd-Warshall في جدول مصفوفي أفقي يوضح الـ Time & Space Complexity ونظرية Master Theorem.',
-      badge: 'علوم الحاسب',
-    },
   ];
+
+  const getExportContent = (msg: ChatMessage) => {
+    let content = msg.content;
+    const sources = msg.groundingMetadata?.groundingChunks
+      ?.filter((c) => c.web?.uri)
+      ?.map((c, i) => `${i + 1}. [${c.web?.title || c.web?.uri}](${c.web?.uri})`)
+      ?.join('\n');
+    if (sources) {
+      content += `\n\n---\n### 🌐 المراجع والمصادر الأكاديمية الموثقة عبر Google Search\n${sources}`;
+    }
+    return content;
+  };
 
   return (
     <div
@@ -242,7 +264,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             Universal Drag & Drop Active
           </h3>
           <p className="text-sm text-cyan-200 max-w-md">
-            Drop any file: Code (.py, .ts, .cpp), Documents (.pdf, .docx, .md), Data (.csv, .xlsx), Images or Archives (.zip)
+            Drop any file: Documents (.pdf, .docx, .xlsx, .pptx), Code (.py, .ts, .cpp), Images (.png, .jpg), Audio (.mp3, .wav), or Videos (.mp4, .mov)
           </p>
         </div>
       )}
@@ -353,6 +375,15 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               {msg.modelUsed}
                             </span>
                           )}
+                          {(msg.groundingMetadata || msg.isGrounded) && (
+                            <span
+                              className="flex items-center gap-1 font-mono text-[10px] text-cyan-300 bg-cyan-950/70 border border-cyan-800/50 px-1.5 py-0.5 rounded shadow-xs"
+                              title="Verified in real-time via Google Search Grounding"
+                            >
+                              <Globe className="w-2.5 h-2.5 text-cyan-400 animate-pulse" />
+                              <span>Grounded</span>
+                            </span>
+                          )}
                         </div>
 
                         {/* 3 Dedicated Action Buttons */}
@@ -360,7 +391,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           {/* 1. Quick Export PDF */}
                           <button
                             type="button"
-                            onClick={() => printMessageAsPdf(msg.content, 'الخلاصة الأكاديمية', activeTheme)}
+                            onClick={() => printMessageAsPdf(getExportContent(msg), 'الخلاصة الأكاديمية', activeTheme)}
                             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-rose-300 hover:text-white bg-rose-950/50 hover:bg-rose-900/70 border border-rose-800/60 transition-colors cursor-pointer"
                             title="Quick Export PDF: Instantly downloads/prints formatted message as a PDF document"
                           >
@@ -371,7 +402,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           {/* 2. Quick Export HTML */}
                           <button
                             type="button"
-                            onClick={() => downloadMessageHtml(msg.content, 'الخلاصة الأكاديمية', activeTheme)}
+                            onClick={() => downloadMessageHtml(getExportContent(msg), 'الخلاصة الأكاديمية', activeTheme)}
                             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-blue-300 hover:text-white bg-blue-950/50 hover:bg-blue-900/70 border border-blue-800/60 transition-colors cursor-pointer"
                             title="Quick Export HTML: Instantly downloads message as a standalone HTML document"
                           >
@@ -382,7 +413,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           {/* 3. Export Studio (Modal) */}
                           <button
                             type="button"
-                            onClick={() => onOpenExportStudio(msg.content, 'الخلاصة الأكاديمية')}
+                            onClick={() => onOpenExportStudio(getExportContent(msg), 'الخلاصة الأكاديمية')}
                             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-cyan-200 hover:text-white bg-cyan-950/60 hover:bg-cyan-900/80 border border-cyan-700/60 transition-colors cursor-pointer shadow-sm"
                             title="Export Studio: Edit file name, select theme, view live preview before saving"
                           >
@@ -393,8 +424,34 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     )}
 
+                    {/* Inline High Demand & Latency Automatic Model Switch Notification Banner */}
+                    {!isUser && msg.switchedDueToDemand && (
+                      <div className="mx-3.5 mt-3 p-3 rounded-xl bg-gradient-to-r from-blue-950/80 via-slate-900/90 to-cyan-950/80 border border-cyan-500/50 text-cyan-200 text-xs flex items-start gap-2.5 animate-in fade-in shadow-md">
+                        <Zap className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5 animate-pulse" />
+                        <div className="space-y-1 text-[11px] leading-relaxed">
+                          <div className="font-bold text-cyan-300 flex items-center gap-1.5">
+                            <span>محرك التجاوب السريع نشط (High Demand & Latency Failover) ⚡</span>
+                          </div>
+                          <p className="text-slate-300">
+                            {msg.failoverReason === 'slow_latency' ? (
+                              <>
+                                تم رصد استجابة بطيئة في قائمة انتظار خادم النموذج <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100">{msg.switchedFrom || 'Primary Model'}</code>. قام محرك المرونة بالتحويل التلقائي الفوري إلى <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100 font-bold">{msg.modelUsed}</code> {msg.failoverLatencyMs && <span className="text-[10px] text-cyan-400 font-mono">({msg.failoverLatencyMs}ms)</span>} لإتمام طلبك دون أي انقطاع.
+                              </>
+                            ) : (
+                              <>
+                                تم رصد ضغط سيرفر مرتفع أو وصول لحدود الاستخدام اللحظية على <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100">{msg.switchedFrom || 'Primary Model'}</code>. تم التحويل التلقائي الفوري إلى <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100 font-bold">{msg.modelUsed}</code> بنجاح.
+                              </>
+                            )}
+                          </p>
+                          <div className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+                            <span>✓ تم الحفاظ على 100% من سياق المحادثة والمرفقات وإتمام الطلب دون أي فشل.</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {/* Inline 404 Automatic Model Switch Notification Banner */}
-                    {!isUser && msg.switchedDueTo404 && (
+                    {!isUser && msg.switchedDueTo404 && !msg.switchedDueToDemand && (
                       <div className="mx-3.5 mt-3 p-3 rounded-xl bg-amber-950/70 border border-amber-800/80 text-amber-200 text-xs flex items-start gap-2.5 animate-in fade-in">
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                         <div className="space-y-1 text-[11px] leading-relaxed">
@@ -413,6 +470,14 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
                     <div className={!isUser ? 'p-3.5 sm:p-5' : ''} dir={isAr ? 'rtl' : 'ltr'}>
                       <RichMathText text={msg.content} />
+
+                      {/* Google Search Grounding Academic Validation Sources Panel */}
+                      {!isUser && (msg.groundingMetadata || msg.isGrounded) && (
+                        <GroundingSourcesView
+                          metadata={msg.groundingMetadata}
+                          isGrounded={msg.isGrounded}
+                        />
+                      )}
 
                       {/* Synthesized Curriculum Document (Embedded on demand) */}
                       {msg.synthesizedDocument && (
@@ -588,6 +653,22 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
       <div className="flex-shrink-0 p-3 sm:p-4 bg-slate-950 border-t border-slate-800 z-10 sticky bottom-0">
         <form onSubmit={handleSubmit} className="relative">
           <div className="flex flex-col bg-slate-900 border border-slate-800 rounded-2xl p-2.5 focus-within:border-cyan-500/60 focus-within:ring-1 focus-within:ring-cyan-500/30 transition-all shadow-lg">
+            {/* Real-Time Google Search Grounding Active Banner */}
+            {enableSearchGrounding && (
+              <div className="flex items-center justify-between px-2.5 py-1 mb-1.5 rounded-lg bg-gradient-to-r from-blue-950/80 via-slate-900/90 to-cyan-950/80 border border-cyan-800/40 text-[10px] text-cyan-300 select-none">
+                <div className="flex items-center gap-1.5">
+                  <Globe className="w-3 h-3 text-cyan-400 animate-pulse shrink-0" />
+                  <span>
+                    <strong>Google Search Grounding نشط:</strong> تدقيق لحظي للثوابت الفيزيائية (CODATA)، صيغ المعادلات، وأحدث الأبحاث العلمية.
+                  </span>
+                </div>
+                <div className="flex items-center gap-1 font-mono text-[9px] text-emerald-400 bg-emerald-950/70 border border-emerald-800/40 px-1.5 py-0.5 rounded">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                  <span>LIVE VALIDATION</span>
+                </div>
+              </div>
+            )}
+
             <textarea
               ref={textareaRef}
               rows={2}
@@ -602,11 +683,12 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             {/* Bottom Controls inside input box */}
             <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 mt-1">
               <div className="flex items-center gap-1.5 sm:gap-2">
-                {/* Generic File Attachment Button */}
+                {/* Generic File Attachment Button supporting all documents, code, images, audio, and videos */}
                 <input
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileInputChange}
+                  accept={SUPPORTED_ACCEPT_ATTRIBUTE}
                   multiple
                   className="hidden"
                 />
@@ -614,7 +696,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
-                  title="Attach any file (Code, PDF, Word, Data, Images, ZIP...)"
+                  title="Attach any file (Documents, Code, Images, Audio, Video, Archives...)"
                 >
                   <Paperclip className="w-4 h-4 text-slate-400" />
                   <span className="hidden sm:inline">Attach</span>
@@ -653,6 +735,26 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 >
                   <BookOpen className="w-3.5 h-3.5 text-blue-400" />
                   <span className="hidden md:inline">Full Curriculum Synthesis</span>
+                </button>
+
+                {/* Google Search Grounding Toggle Button */}
+                <button
+                  type="button"
+                  onClick={() => setEnableSearchGrounding(!enableSearchGrounding)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-all cursor-pointer border ${
+                    enableSearchGrounding
+                      ? 'bg-cyan-950/80 border-cyan-500/70 text-cyan-200 shadow-sm shadow-cyan-950/60 ring-1 ring-cyan-500/30'
+                      : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+                  }`}
+                  title="Toggle real-time Google Search Grounding to verify constants, equations & scientific breakthroughs"
+                >
+                  <Globe className={`w-3.5 h-3.5 ${enableSearchGrounding ? 'text-cyan-400 animate-pulse' : 'text-slate-400'}`} />
+                  <span className="hidden sm:inline">Search Grounding</span>
+                  {enableSearchGrounding ? (
+                    <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 px-1 py-0.2 rounded font-mono">ON</span>
+                  ) : (
+                    <span className="text-[10px] text-slate-500 font-mono">OFF</span>
+                  )}
                 </button>
               </div>
 
