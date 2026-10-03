@@ -22,15 +22,26 @@ const ai = new GoogleGenAI({
   },
 });
 
-// Robust Fallback Model Chain (Strictly latest 3.x series in priority order)
-const FALLBACK_MODELS = [
-  'gemini-3.8-flash', // Primary Target (High speed & performance)
+// Robust Fallback Model Chain (Exact list of available Gemini models in priority order)
+const AVAILABLE_GEMINI_MODELS = [
+  'gemini-3.8-flash', // Primary / Default (High speed & performance)
   'gemini-3.7-flash', // Fallback 1
   'gemini-3.6-flash', // Fallback 2
-  'gemini-3.5-flash-lite', // Fallback 3 (Low-latency/lightweight fallback)
+  'gemini-3.5-flash', // Fallback 3
+  'gemini-3.5-flash-lite', // Fallback 4 (Ultra Fast)
+  'gemini-3.1-flash-lite', // Fallback 5 (Resilient Base)
 ];
 
+interface FailoverRecord {
+  model: string;
+  error: string;
+  is404: boolean;
+  is503Or429: boolean;
+  nextModel?: string;
+}
+
 interface FallbackOptions {
+  preferredModel?: string;
   systemInstruction?: string;
   temperature?: number;
   responseMimeType?: string;
@@ -39,24 +50,105 @@ interface FallbackOptions {
   groqKey?: string;
 }
 
+interface FallbackResult {
+  text: string;
+  modelUsed: string;
+  switchedDueTo404: boolean;
+  switchedFrom?: string;
+  failovers: FailoverRecord[];
+}
+
 /**
- * Execute Gemini calls with instant, silent, sequential failover across models
- * resolving 503 (High Demand / Service Unavailable) and 429 (Rate Limit / Quota Exceeded).
+ * Builds the failover sequence starting with user's preferred model or the primary default,
+ * followed sequentially down through the remaining available Gemini models.
+ */
+function buildModelChain(preferredModel?: string): string[] {
+  if (!preferredModel || !AVAILABLE_GEMINI_MODELS.includes(preferredModel)) {
+    return [...AVAILABLE_GEMINI_MODELS];
+  }
+  const idx = AVAILABLE_GEMINI_MODELS.indexOf(preferredModel);
+  return [
+    ...AVAILABLE_GEMINI_MODELS.slice(idx),
+    ...AVAILABLE_GEMINI_MODELS.slice(0, idx),
+  ];
+}
+
+/**
+ * Helper to extract clean text for external fallback providers (Groq/OpenRouter)
+ * without sending raw massive Base64 strings.
+ */
+function extractCleanTextForExternal(contents: any): string {
+  if (typeof contents === 'string') return contents;
+  if (Array.isArray(contents)) {
+    return contents
+      .map((item: any) => {
+        if (item.parts && Array.isArray(item.parts)) {
+          return item.parts
+            .map((p: any) => {
+              if (p.text) return p.text;
+              if (p.inlineData) return `[Attached File: ${p.inlineData.mimeType || 'Document'}]`;
+              return '';
+            })
+            .filter(Boolean)
+            .join('\n');
+        }
+        return item.content || '';
+      })
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  if (contents && contents.parts && Array.isArray(contents.parts)) {
+    return contents.parts
+      .map((p: any) => {
+        if (p.text) return p.text;
+        if (p.inlineData) return `[Attached File: ${p.inlineData.mimeType || 'Document'}]`;
+        return '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+  return String(contents);
+}
+
+/**
+ * Execute Gemini calls with automatic, sequential failover across models.
+ * Automatically resolves:
+ * - HTTP 404 (Not Found / Model Unavailable in account) -> immediate failover down chain
+ * - HTTP 503 (High Demand / Service Unavailable)
+ * - HTTP 429 (Rate Limit / Quota Exceeded)
+ * 
+ * Preserves all PDF and multimodal Base64 inlineData across every fallback attempt.
  */
 async function generateWithFallback(
   contents: any,
   options: FallbackOptions = {}
-): Promise<{ text: string; modelUsed: string }> {
+): Promise<FallbackResult> {
   let lastError: any = null;
+  const failovers: FailoverRecord[] = [];
+  let switchedDueTo404 = false;
+  let switchedFrom: string | undefined = undefined;
+
+  const modelChain = buildModelChain(options.preferredModel);
+  console.log(`[Easy AI Engine] Starting inference chain (${modelChain.join(' → ')})`);
 
   // 1. Try Gemini chain sequentially
-  for (const model of FALLBACK_MODELS) {
+  for (let i = 0; i < modelChain.length; i++) {
+    const model = modelChain[i];
+    const nextModel = modelChain[i + 1];
+
     try {
       console.log(`[Easy AI Engine] Attempting inference with model: ${model}`);
-      
+
+      // Deep clone contents on every attempt to guarantee pristine preservation of all
+      // multimodal PDF and image inlineData (Base64) across every fallback switch.
+      const payloadContents =
+        typeof contents === 'object' && contents !== null
+          ? JSON.parse(JSON.stringify(contents))
+          : contents;
+
       const config: any = {
         temperature: options.temperature ?? 0.2,
-        maxOutputTokens: 8192, // Maximum supported output tokens for exhaustive, detailed academic responses
+        maxOutputTokens: 8192,
       };
 
       if (options.systemInstruction) {
@@ -71,19 +163,38 @@ async function generateWithFallback(
 
       const response = await ai.models.generateContent({
         model,
-        contents,
+        contents: payloadContents,
         config,
       });
 
       const text = response.text;
       if (text && text.trim().length > 0) {
-        console.log(`[Easy AI Engine] Successful response from: ${model}`);
-        return { text, modelUsed: model };
+        console.log(`[Easy AI Engine] Successful response from model: ${model}`);
+        return {
+          text,
+          modelUsed: model,
+          switchedDueTo404,
+          switchedFrom,
+          failovers,
+        };
       }
     } catch (err: any) {
       lastError = err;
       const errMsg = err?.message || String(err);
-      const isTransient =
+      const status = err?.status || err?.statusCode || err?.code || 0;
+
+      const is404 =
+        status === 404 ||
+        errMsg.includes('404') ||
+        errMsg.includes('NOT_FOUND') ||
+        errMsg.includes('not found') ||
+        errMsg.includes('is not found for API version') ||
+        errMsg.includes('is not supported') ||
+        errMsg.includes('Model Unavailable');
+
+      const is503Or429 =
+        status === 503 ||
+        status === 429 ||
         errMsg.includes('503') ||
         errMsg.includes('429') ||
         errMsg.includes('RESOURCE_EXHAUSTED') ||
@@ -92,19 +203,39 @@ async function generateWithFallback(
         errMsg.includes('quota') ||
         errMsg.includes('rate limit');
 
-      console.warn(`[Easy AI Engine] Model ${model} encountered error (${isTransient ? 'transient 503/429' : 'error'}):`, errMsg);
-      
-      // Brief pause before switching to next fallback in chain
-      await new Promise((r) => setTimeout(r, 400));
+      if (is404) {
+        switchedDueTo404 = true;
+        if (!switchedFrom) switchedFrom = model;
+        console.warn(
+          `[Easy AI Engine] Model ${model} returned HTTP 404 (Not Found / Unavailable). Triggering immediate failover down the chain to ${nextModel || 'next'}...`
+        );
+      } else {
+        console.warn(
+          `[Easy AI Engine] Model ${model} encountered error (${is503Or429 ? 'transient 503/429' : 'error'}): ${errMsg}. Failing over...`
+        );
+      }
+
+      failovers.push({
+        model,
+        error: errMsg,
+        is404,
+        is503Or429,
+        nextModel,
+      });
+
+      // For 404, fail over immediately without waiting. For 503/429, short pause to let rate limit clear.
+      if (!is404) {
+        await new Promise((r) => setTimeout(r, 300));
+      }
     }
   }
 
-  // 2. Try External Provider Fallback: OpenRouter if configured
+  // 2. Only attempt external fallbacks (OpenRouter / Groq) IF those keys were explicitly provided
   const openRouterApiKey = options.openRouterKey || process.env.OPENROUTER_API_KEY;
   if (openRouterApiKey) {
     try {
       console.log('[Easy AI Engine] Invoking OpenRouter Fallback Provider...');
-      const promptString = typeof contents === 'string' ? contents : JSON.stringify(contents);
+      const promptString = extractCleanTextForExternal(contents);
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -129,7 +260,13 @@ async function generateWithFallback(
         const text = data.choices?.[0]?.message?.content;
         if (text) {
           console.log('[Easy AI Engine] Successfully answered via OpenRouter fallback.');
-          return { text, modelUsed: 'openrouter/google/gemini-3.8-flash' };
+          return {
+            text,
+            modelUsed: 'openrouter/google/gemini-3.8-flash',
+            switchedDueTo404,
+            switchedFrom,
+            failovers,
+          };
         }
       }
     } catch (openRouterErr) {
@@ -137,12 +274,12 @@ async function generateWithFallback(
     }
   }
 
-  // 3. Try External Provider Fallback: Groq if configured
+  // 3. Try Groq if key is provided
   const groqApiKey = options.groqKey || process.env.GROQ_API_KEY;
   if (groqApiKey) {
     try {
       console.log('[Easy AI Engine] Invoking Groq Fallback Provider...');
-      const promptString = typeof contents === 'string' ? contents : JSON.stringify(contents);
+      const promptString = extractCleanTextForExternal(contents);
       const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
         headers: {
@@ -165,7 +302,13 @@ async function generateWithFallback(
         const text = data.choices?.[0]?.message?.content;
         if (text) {
           console.log('[Easy AI Engine] Successfully answered via Groq fallback.');
-          return { text, modelUsed: 'groq/llama-3.3-70b-versatile' };
+          return {
+            text,
+            modelUsed: 'groq/llama-3.3-70b-versatile',
+            switchedDueTo404,
+            switchedFrom,
+            failovers,
+          };
         }
       }
     } catch (groqErr) {
@@ -174,7 +317,7 @@ async function generateWithFallback(
   }
 
   throw new Error(
-    `All models in the fallback chain encountered errors. Last error: ${lastError?.message || 'Unknown error'}`
+    `All available Gemini models in the fallback chain (${AVAILABLE_GEMINI_MODELS.join(' → ')}) failed or were unavailable. Last error: ${lastError?.message || 'Unknown error'}`
   );
 }
 
@@ -190,7 +333,7 @@ const EGYPTIAN_ARABIC_DIRECTIVE = `
 // ==========================================
 app.post('/api/chat', async (req: Request, res: Response) => {
   try {
-    const { messages, targetLanguage = 'ar-EG', externalKeys, requestSynthesis = false } = req.body;
+    const { messages, targetLanguage = 'ar-EG', externalKeys, requestSynthesis = false, preferredModel } = req.body;
 
     if (!messages || !Array.isArray(messages) || messages.length === 0) {
       res.status(400).json({ error: 'Messages array is required.' });
@@ -255,7 +398,8 @@ Follow these strict output rules:
       });
     }
 
-    const { text, modelUsed } = await generateWithFallback(formattedContents, {
+    const { text, modelUsed, switchedDueTo404, switchedFrom, failovers } = await generateWithFallback(formattedContents, {
+      preferredModel,
       systemInstruction: `${systemInstruction}\n${EGYPTIAN_ARABIC_DIRECTIVE}`,
       temperature: 0.3,
       openRouterKey: externalKeys?.openRouterKey,
@@ -265,6 +409,9 @@ Follow these strict output rules:
     res.json({
       reply: text,
       modelUsed,
+      switchedDueTo404,
+      switchedFrom,
+      failovers,
     });
   } catch (err: any) {
     console.error('[Easy AI Engine] /api/chat error:', err);
@@ -279,7 +426,17 @@ Follow these strict output rules:
 // ==========================================
 app.post('/api/curriculum/analyze', async (req: Request, res: Response) => {
   try {
-    const { title, discipline, targetLanguage = 'ar-EG', level, focus, rawContent, externalKeys } = req.body;
+    const {
+      title,
+      discipline,
+      targetLanguage = 'ar-EG',
+      level,
+      focus,
+      rawContent,
+      externalKeys,
+      preferredModel,
+      attachments,
+    } = req.body;
 
     if (!rawContent || typeof rawContent !== 'string') {
       res.status(400).json({ error: 'Missing curriculum raw content.' });
@@ -317,7 +474,26 @@ ${rawContent}
 
 Synthesize this curriculum into a 100% exhaustive, professionally structured academic summary directly adhering to all 5 output rules with zero omissions, complete structured tables, and the 3 mandatory high-yield analytical blocks.`;
 
-    const { text, modelUsed } = await generateWithFallback(userPrompt, {
+    let curriculumContents: any = userPrompt;
+    if (attachments && Array.isArray(attachments) && attachments.length > 0) {
+      const parts: any[] = [];
+      for (const att of attachments) {
+        if (att.base64Data && att.mimeType && (att.mimeType === 'application/pdf' || att.mimeType.startsWith('image/'))) {
+          const cleanBase64 = att.base64Data.replace(/^data:[^;]+;base64,/, '');
+          parts.push({
+            inlineData: {
+              data: cleanBase64,
+              mimeType: att.mimeType,
+            },
+          });
+        }
+      }
+      parts.push({ text: userPrompt });
+      curriculumContents = { parts };
+    }
+
+    const { text, modelUsed, switchedDueTo404, switchedFrom, failovers } = await generateWithFallback(curriculumContents, {
+      preferredModel,
       systemInstruction,
       temperature: 0.2,
       responseMimeType: 'application/json',
@@ -408,6 +584,9 @@ Synthesize this curriculum into a 100% exhaustive, professionally structured aca
 
     const parsedData = JSON.parse(text);
     parsedData._modelUsed = modelUsed;
+    parsedData._switchedDueTo404 = switchedDueTo404;
+    parsedData._switchedFrom = switchedFrom;
+    parsedData._failovers = failovers;
     res.json(parsedData);
   } catch (error: any) {
     console.error('[Easy AI Engine] Curriculum analyze error:', error);

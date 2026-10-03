@@ -19,11 +19,19 @@ import {
   getActiveSessionId,
   setActiveSessionId,
 } from './utils/sessionStorage';
-import { AlertCircle, CheckCircle2 } from 'lucide-react';
+import { AlertCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export default function App() {
   const [currentTheme, setCurrentTheme] = useState<ThemeConfig>(THEMES[0]); // Classic Ivory
   const [currentLanguage, setCurrentLanguage] = useState<TargetLanguage>('ar-EG'); // Egyptian Arabic Default
+  const [selectedModel, setSelectedModel] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem('easy_selected_model');
+      return stored || 'gemini-3.8-flash';
+    } catch {
+      return 'gemini-3.8-flash';
+    }
+  });
   
   // Persistent Sessions State
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
@@ -70,7 +78,17 @@ export default function App() {
       return {};
     }
   });
-  const [notification, setNotification] = useState<{ type: 'error' | 'success'; message: string } | null>(null);
+  const [notification, setNotification] = useState<{ type: 'error' | 'success' | 'warning'; message: string } | null>(null);
+
+  const handleSelectModel = (modelId: string) => {
+    setSelectedModel(modelId);
+    try {
+      localStorage.setItem('easy_selected_model', modelId);
+    } catch (e) {
+      console.warn(e);
+    }
+    showNotification('success', `Active inference model set to ${modelId}`);
+  };
 
   // Active session helper
   const currentSession = sessions.find((s) => s.id === activeSessionId) || sessions[0];
@@ -129,7 +147,7 @@ export default function App() {
     }
   };
 
-  const showNotification = (type: 'error' | 'success', message: string) => {
+  const showNotification = (type: 'error' | 'success' | 'warning', message: string) => {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), 5000);
   };
@@ -264,6 +282,15 @@ export default function App() {
             focus: 'Strict Anti-Repetition & Mathematical Precision',
             rawContent,
             externalKeys,
+            preferredModel: selectedModel,
+            attachments: pdfFiles.map((a) => ({
+              name: a.name,
+              type: a.type,
+              size: a.size,
+              textContent: a.textContent,
+              base64Data: a.base64Data,
+              mimeType: a.mimeType,
+            })),
           }),
         });
 
@@ -273,8 +300,19 @@ export default function App() {
         }
 
         const docResult: CurriculumAnalysisResult = await res.json();
-        const modelUsed = (docResult as any)._modelUsed || 'gemini-3.8-flash';
+        const modelUsed = (docResult as any)._modelUsed || selectedModel;
+        const switchedDueTo404 = Boolean((docResult as any)._switchedDueTo404);
+        const switchedFrom = (docResult as any)._switchedFrom;
         setLastModelUsed(modelUsed);
+
+        if (switchedDueTo404) {
+          showNotification(
+            'warning',
+            `⚠️ Model ${switchedFrom || selectedModel} returned 404 (Not Found). Automatically switched to ${modelUsed} with all PDF attachments preserved.`
+          );
+        } else {
+          showNotification('success', `Curriculum synthesized using ${modelUsed}`);
+        }
 
         const aiMessage: ChatMessage = {
           id: `model-${Date.now()}`,
@@ -289,6 +327,8 @@ export default function App() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           synthesizedDocument: docResult,
           modelUsed,
+          switchedDueTo404,
+          switchedFrom,
         };
 
         setSessions((prev) =>
@@ -304,8 +344,6 @@ export default function App() {
               : s
           )
         );
-
-        showNotification('success', `Curriculum synthesized using ${modelUsed}`);
       } else {
         // Conversational query with multimodal and untruncated context
         const res = await fetch('/api/chat', {
@@ -326,6 +364,7 @@ export default function App() {
             })),
             targetLanguage: currentLanguage,
             externalKeys,
+            preferredModel: selectedModel,
           }),
         });
 
@@ -335,8 +374,17 @@ export default function App() {
         }
 
         const data = await res.json();
-        const modelUsed = data.modelUsed || 'gemini-3.8-flash';
+        const modelUsed = data.modelUsed || selectedModel;
+        const switchedDueTo404 = Boolean(data.switchedDueTo404);
+        const switchedFrom = data.switchedFrom;
         setLastModelUsed(modelUsed);
+
+        if (switchedDueTo404) {
+          showNotification(
+            'warning',
+            `⚠️ Model ${switchedFrom || selectedModel} returned 404 (Not Found). Automatically switched to ${modelUsed} with full PDF context preserved.`
+          );
+        }
 
         const aiMessage: ChatMessage = {
           id: `model-${Date.now()}`,
@@ -344,6 +392,8 @@ export default function App() {
           content: data.reply,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           modelUsed,
+          switchedDueTo404,
+          switchedFrom,
         };
 
         setSessions((prev) =>
@@ -414,6 +464,8 @@ export default function App() {
           onSelectTheme={setCurrentTheme}
           currentLanguage={currentLanguage}
           onSelectLanguage={setCurrentLanguage}
+          selectedModel={selectedModel}
+          onSelectModel={handleSelectModel}
           onOpenPreview={() => handleOpenExportPreview(activeDocument || undefined)}
           onDirectPrint={handleDirectPrint}
           onOpenSettings={() => setIsSettingsOpen(true)}
@@ -447,11 +499,15 @@ export default function App() {
               className={`fixed top-16 right-4 z-50 p-3 px-4 rounded-xl text-xs flex items-center gap-2 shadow-2xl backdrop-blur-md animate-in slide-in-from-top-2 duration-200 ${
                 notification.type === 'error'
                   ? 'bg-rose-950/90 border border-rose-800 text-rose-200'
+                  : notification.type === 'warning'
+                  ? 'bg-amber-950/90 border border-amber-800 text-amber-200'
                   : 'bg-emerald-950/90 border border-emerald-800 text-emerald-200'
               }`}
             >
               {notification.type === 'error' ? (
                 <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+              ) : notification.type === 'warning' ? (
+                <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
               ) : (
                 <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
               )}

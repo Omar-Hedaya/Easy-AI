@@ -31,6 +31,7 @@ import {
   Trash2,
   Loader2,
   Layers,
+  AlertTriangle,
 } from 'lucide-react';
 
 interface ChatWorkspaceProps {
@@ -423,6 +424,24 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                             <Sliders className="w-3 h-3 text-cyan-400" />
                             <span>Export Studio</span>
                           </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Inline 404 Automatic Model Switch Notification Banner */}
+                    {!isUser && msg.switchedDueTo404 && (
+                      <div className="mx-3.5 mt-3 p-3 rounded-xl bg-amber-950/70 border border-amber-800/80 text-amber-200 text-xs flex items-start gap-2.5 animate-in fade-in">
+                        <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
+                        <div className="space-y-1 text-[11px] leading-relaxed">
+                          <div className="font-bold text-amber-300 flex items-center gap-1.5">
+                            <span>Automatic Failover Active (HTTP 404 Not Found)</span>
+                          </div>
+                          <p className="text-amber-200/90">
+                            Model <code className="px-1 py-0.5 rounded bg-amber-900/60 font-mono text-[10px] text-amber-100">{msg.switchedFrom || 'Target Model'}</code> was unavailable in your project account (HTTP 404). The Resiliency Engine seamlessly failed over to <code className="px-1 py-0.5 rounded bg-amber-900/60 font-mono text-[10px] text-amber-100 font-bold">{msg.modelUsed}</code>.
+                          </p>
+                          <div className="text-[10px] text-emerald-400/90 font-medium flex items-center gap-1">
+                            <span>✓ All uploaded PDF attachments and multimodal context were preserved 100%.</span>
+                          </div>
                         </div>
                       </div>
                     )}

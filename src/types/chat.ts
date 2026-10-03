@@ -9,6 +9,9 @@ export interface ChatMessage {
   attachments?: ProcessedFile[];
   synthesizedDocument?: CurriculumAnalysisResult;
   modelUsed?: string;
+  switchedDueTo404?: boolean;
+  switchedFrom?: string;
+  failoverNotice?: string;
   isStreaming?: boolean;
   durationMs?: number;
 }

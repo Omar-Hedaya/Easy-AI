@@ -2,13 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { ThemeConfig, TargetLanguage } from '../types/themes';
 import { ThemeSelector } from './ThemeSelector';
 import { LanguageSelector } from './LanguageSelector';
-import { Printer, Eye, Zap, PlusCircle, PanelLeft, Maximize2, Minimize2 } from 'lucide-react';
+import { ModelSelector } from './ModelSelector';
+import { Printer, Eye, PlusCircle, PanelLeft, Maximize2, Minimize2 } from 'lucide-react';
 
 interface DocumentHeaderBarProps {
   currentTheme: ThemeConfig;
   onSelectTheme: (theme: ThemeConfig) => void;
   currentLanguage: TargetLanguage;
   onSelectLanguage: (lang: TargetLanguage) => void;
+  selectedModel: string;
+  onSelectModel: (modelId: string) => void;
   onOpenPreview: () => void;
   onDirectPrint: () => void;
   onOpenSettings: () => void;
@@ -23,13 +26,15 @@ export const DocumentHeaderBar: React.FC<DocumentHeaderBarProps> = ({
   onSelectTheme,
   currentLanguage,
   onSelectLanguage,
+  selectedModel,
+  onSelectModel,
   onOpenPreview,
   onDirectPrint,
   onOpenSettings,
   onNewChat,
   onToggleSidebar,
   hasAnalyzedData,
-  lastModelUsed = 'gemini-3.8-flash',
+  lastModelUsed,
 }) => {
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -117,15 +122,12 @@ export const DocumentHeaderBar: React.FC<DocumentHeaderBarProps> = ({
             )}
           </button>
 
-          {/* Engine 503/429 Status Button */}
-          <button
-            onClick={onOpenSettings}
-            className="hidden lg:flex items-center gap-1.5 px-2 py-1.5 rounded-lg border border-slate-800 bg-slate-900/80 text-slate-400 hover:text-white hover:border-slate-700 transition-colors text-xs font-mono cursor-pointer"
-            title="Inspect 503 & 429 Fallback Engine & Resiliency Settings"
-          >
-            <Zap className="w-3.5 h-3.5 text-amber-400" />
-            <span className="truncate max-w-[100px]">{lastModelUsed}</span>
-          </button>
+          {/* Gemini Model Selector & Failover Priority Dropdown */}
+          <ModelSelector
+            currentModel={selectedModel}
+            onSelectModel={onSelectModel}
+            onOpenSettings={onOpenSettings}
+          />
         </div>
 
         {/* Zone 3: Primary Actions (Export Preview & High-Fidelity Print) */}

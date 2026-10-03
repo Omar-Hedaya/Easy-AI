@@ -72,18 +72,36 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
                 {lastModelUsed}
               </span>
             </div>
-            <div className="text-[11px] text-slate-400 space-y-1">
-              <div className="font-semibold text-slate-300">Automatic Failover Chain:</div>
-              <div className="flex items-center gap-1.5 flex-wrap font-mono text-[10px] text-slate-400">
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200">1. gemini-3.8-flash (Primary)</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200">2. gemini-3.7-flash</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200">3. gemini-3.6-flash</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200">4. gemini-3.5-flash-lite</span>
-                <span>→</span>
-                <span className="px-1.5 py-0.5 rounded bg-slate-800 text-slate-200">5. OpenRouter/Groq</span>
+            <div className="text-[11px] text-slate-400 space-y-1.5">
+              <div className="font-semibold text-slate-300">Gemini Account Models (Failover Chain):</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 font-mono text-[10px]">
+                <div className="p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between">
+                  <span className="text-cyan-300 font-bold">1. gemini-3.8-flash</span>
+                  <span className="text-[9px] text-slate-400">Primary / Default</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between">
+                  <span className="text-slate-200">2. gemini-3.7-flash</span>
+                  <span className="text-[9px] text-slate-400">Fallback 1</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between">
+                  <span className="text-slate-200">3. gemini-3.6-flash</span>
+                  <span className="text-[9px] text-slate-400">Fallback 2</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between">
+                  <span className="text-slate-200">4. gemini-3.5-flash</span>
+                  <span className="text-[9px] text-slate-400">Fallback 3</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between">
+                  <span className="text-slate-200">5. gemini-3.5-flash-lite</span>
+                  <span className="text-[9px] text-slate-400">Fallback 4</span>
+                </div>
+                <div className="p-1.5 rounded bg-slate-900 border border-slate-800 flex items-center justify-between">
+                  <span className="text-slate-200">6. gemini-3.1-flash-lite</span>
+                  <span className="text-[9px] text-slate-400">Fallback 5</span>
+                </div>
+              </div>
+              <div className="text-[10px] text-emerald-400/90 pt-0.5">
+                ✓ Uploaded PDFs & multimodal Base64 inlineData are preserved 100% across every model switch.
               </div>
             </div>
           </div>
@@ -92,12 +110,15 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
           <div className="space-y-3">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
               <Key className="w-3.5 h-3.5 text-amber-400" />
-              <span>Optional External Fallback API Keys (User-Configured)</span>
+              <span>Optional External Fallback API Keys</span>
             </div>
+            <p className="text-[11px] text-slate-400">
+              Only attempted if provided below; otherwise, inference stays strictly within the 6 available Gemini models above.
+            </p>
 
             <div>
               <label className="block text-[11px] text-slate-400 mb-1">
-                OpenRouter API Key (Optional failover):
+                OpenRouter API Key (Optional external failover):
               </label>
               <input
                 type="password"
@@ -125,7 +146,7 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
           <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[11px] text-blue-300 flex items-start gap-2">
             <Info className="w-4 h-4 shrink-0 text-blue-400 mt-0.5" />
             <span>
-              If Gemini ever responds with HTTP 503 or 429, the engine automatically switches models in real time without failing your query.
+              If any model returns <strong>HTTP 404 (Not Found / Model Unavailable)</strong>, <strong>503 (High Demand)</strong>, or <strong>429 (Rate Limit)</strong>, the engine triggers immediate automatic failover down the chain without failing your request.
             </span>
           </div>
         </div>

@@ -67,4 +67,16 @@ export interface CurriculumAnalysisResult {
     duplicateFormulasPrevented: number;
     verificationNotice: string;
   };
+  groundingSources?: { title: string; uri: string }[];
+  scientificVerificationLedger?: {
+    verifiedConstants: {
+      name: string;
+      symbol: string;
+      standardValue: string;
+      unit: string;
+      sourceCitation: string;
+      verified: boolean;
+    }[];
+    verificationSummary: string;
+  };
 }
