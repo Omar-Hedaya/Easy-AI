@@ -1,0 +1,6 @@
+{
+  "name": "Easy - Academic Curriculum Precision Engine",
+  "description": "Elite academic curriculum analyzer, precision LaTeX renderer, anti-repetition summarizer, and high-fidelity 15-theme exporter.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
