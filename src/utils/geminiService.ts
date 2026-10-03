@@ -49,6 +49,503 @@ export interface DirectApiResult<T = string> {
   switchedFrom?: string;
   groundingMetadata?: GroundingMetadata;
   isGrounded?: boolean;
+  switchedDueToQuota?: boolean;
+  fallbackProvider?: 'gemini' | 'groq' | 'openrouter';
+  fallbackTier?: 1 | 2 | 3;
+  fallbackNotice?: string;
+}
+
+export const GROQ_DEFAULT_MODELS = [
+  'llama-3.3-70b-versatile',
+  'llama-3.1-8b-instant',
+];
+
+export const OPENROUTER_TIER2_MODELS = [
+  'deepseek/deepseek-chat',
+  'google/gemini-2.0-flash-exp:free',
+];
+
+export const OPENROUTER_TIER3_FREE_MODELS = [
+  'google/gemini-2.0-flash-exp:free',
+  'meta-llama/llama-3.3-70b-instruct:free',
+  'deepseek/deepseek-chat',
+  'meta-llama/llama-3.1-8b-instruct:free',
+];
+
+export const OPENROUTER_FALLBACK_MODELS = OPENROUTER_TIER3_FREE_MODELS;
+
+/**
+ * Resolves Groq API Key from:
+ * 1. Explicit parameter
+ * 2. VITE_GROQ_API_KEY environment variable
+ * 3. Settings localStorage ('easy_external_keys' or 'groq_api_key')
+ */
+export function getGroqApiKey(customKey?: string): string {
+  if (customKey && typeof customKey === 'string' && customKey.trim()) {
+    return customKey.trim();
+  }
+  const envKey = import.meta.env.VITE_GROQ_API_KEY;
+  if (envKey && typeof envKey === 'string' && envKey.trim() && envKey !== 'MY_GROQ_API_KEY') {
+    return envKey.trim();
+  }
+  try {
+    const stored = localStorage.getItem('easy_external_keys');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed.groqKey && typeof parsed.groqKey === 'string' && parsed.groqKey.trim()) {
+        return parsed.groqKey.trim();
+      }
+    }
+    const directStored = localStorage.getItem('groq_api_key');
+    if (directStored && typeof directStored === 'string' && directStored.trim()) {
+      return directStored.trim();
+    }
+  } catch (e) {
+    console.warn('[Groq] Error reading stored key:', e);
+  }
+  return '';
+}
+
+/**
+ * Resolves OpenRouter API Key from:
+ * 1. Explicit parameter
+ * 2. VITE_OPENROUTER_API_KEY environment variable
+ * 3. Settings localStorage ('easy_external_keys' or 'openrouter_api_key')
+ */
+export function getOpenRouterApiKey(customKey?: string): string {
+  if (customKey && typeof customKey === 'string' && customKey.trim()) {
+    return customKey.trim();
+  }
+  const envKey = import.meta.env.VITE_OPENROUTER_API_KEY;
+  if (envKey && typeof envKey === 'string' && envKey.trim() && envKey !== 'MY_OPENROUTER_API_KEY') {
+    return envKey.trim();
+  }
+  try {
+    const stored = localStorage.getItem('easy_external_keys');
+    if (stored) {
+      const parsed = JSON.parse(stored);
+      if (parsed.openRouterKey && typeof parsed.openRouterKey === 'string' && parsed.openRouterKey.trim()) {
+        return parsed.openRouterKey.trim();
+      }
+    }
+    const directStored = localStorage.getItem('openrouter_api_key');
+    if (directStored && typeof directStored === 'string' && directStored.trim()) {
+      return directStored.trim();
+    }
+  } catch (e) {
+    console.warn('[OpenRouter] Error reading stored key:', e);
+  }
+  return '';
+}
+
+/**
+ * Intercepts Gemini rate limit, quota exhaustion (429), service unavailable (503), or network errors.
+ */
+export function isRateLimitOrQuotaError(status?: number, message?: string): boolean {
+  if (status === 429 || status === 503 || status === 504 || status === 500 || status === 502) return true;
+  if (!message) return false;
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('resource exhausted') ||
+    lower.includes('resource_exhausted') ||
+    lower.includes('quota') ||
+    lower.includes('exceeded your current quota') ||
+    lower.includes('rate limit') ||
+    lower.includes('ratelimit') ||
+    lower.includes('too many requests') ||
+    lower.includes('429') ||
+    lower.includes('503') ||
+    lower.includes('overloaded') ||
+    lower.includes('failed to fetch') ||
+    lower.includes('network error') ||
+    lower.includes('networkerror') ||
+    lower.includes('timeout') ||
+    lower.includes('timed out') ||
+    lower.includes('connection') ||
+    lower.includes('abort')
+  );
+}
+
+/**
+ * Converts chat history and multimodal attachments into standard OpenAI-compatible format
+ * for Groq and OpenRouter endpoints.
+ * @param preferTextOnly When true (e.g. for Groq text models), formats image attachments as textual metadata
+ *                       to avoid 400 Bad Request on models without vision capability.
+ */
+export function convertMessagesToOpenAIFormat(
+  messages: ChatMessage[],
+  systemInstruction?: string,
+  targetLanguage: string = 'ar-EG',
+  preferTextOnly: boolean = false
+): any[] {
+  const formattedMessages: any[] = [];
+
+  const fullSystemPrompt = `${systemInstruction || CHAT_SYSTEM_INSTRUCTION}\n${EGYPTIAN_ARABIC_DIRECTIVE}\nTarget Language: ${targetLanguage}`;
+  formattedMessages.push({
+    role: 'system',
+    content: fullSystemPrompt,
+  });
+
+  for (const msg of messages) {
+    const role = msg.role === 'model' || (msg.role as any) === 'assistant' ? 'assistant' : 'user';
+
+    if (role === 'assistant') {
+      formattedMessages.push({
+        role: 'assistant',
+        content: msg.content || '',
+      });
+      continue;
+    }
+
+    // Role is user
+    const textAttachments = msg.attachments?.filter((a) => a.fileCategory !== 'image') || [];
+    const imageAttachments = msg.attachments?.filter((a) => a.fileCategory === 'image') || [];
+
+    let combinedText = msg.content || '';
+    for (const file of textAttachments) {
+      if (file.textContent) {
+        combinedText += `\n\n[Attached Ingested File: "${file.name}" (${file.type || file.extension || 'document'})]\n${file.textContent}`;
+      }
+    }
+
+    if (imageAttachments.length > 0) {
+      if (preferTextOnly) {
+        for (const img of imageAttachments) {
+          combinedText += `\n\n[Attached Image Reference: "${img.name}" (${img.mimeType || 'image'})]`;
+          if (img.textContent) {
+            combinedText += `\nExtracted Text: ${img.textContent}`;
+          }
+        }
+        formattedMessages.push({
+          role: 'user',
+          content: combinedText || ' ',
+        });
+      } else {
+        const parts: any[] = [];
+        if (combinedText.trim()) {
+          parts.push({ type: 'text', text: combinedText });
+        }
+        for (const img of imageAttachments) {
+          let dataUrl = '';
+          if (img.base64Data) {
+            dataUrl = img.base64Data.startsWith('data:')
+              ? img.base64Data
+              : `data:${img.mimeType || 'image/png'};base64,${img.base64Data}`;
+          }
+          if (dataUrl) {
+            parts.push({
+              type: 'image_url',
+              image_url: { url: dataUrl },
+            });
+          }
+        }
+        formattedMessages.push({
+          role: 'user',
+          content: parts.length > 0 ? parts : combinedText || ' ',
+        });
+      }
+    } else {
+      formattedMessages.push({
+        role: 'user',
+        content: combinedText || ' ',
+      });
+    }
+  }
+
+  return formattedMessages;
+}
+
+// Backward-compatibility alias
+export const convertMessagesToOpenRouterFormat = convertMessagesToOpenAIFormat;
+
+/**
+ * Tier 1 Failover: Executes chat completion request via Groq Cloud API.
+ * Endpoint: https://api.groq.com/openai/v1/chat/completions
+ * Models: llama-3.3-70b-versatile, llama-3.1-8b-instant
+ */
+export async function callGroqApi(params: {
+  messages: any[];
+  model?: string;
+  groqKey?: string;
+  responseFormatJson?: boolean;
+}): Promise<{ content: string; modelUsed: string }> {
+  const apiKey = getGroqApiKey(params.groqKey);
+  if (!apiKey) {
+    throw new Error('Groq API Key is not configured (check VITE_GROQ_API_KEY or Settings).');
+  }
+
+  const modelsToTry = params.model
+    ? [params.model, ...GROQ_DEFAULT_MODELS.filter((m) => m !== params.model)]
+    : GROQ_DEFAULT_MODELS;
+
+  const endpoint = 'https://api.groq.com/openai/v1/chat/completions';
+  let lastError: any = null;
+
+  for (const modelCandidate of modelsToTry) {
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      };
+
+      const bodyPayload: any = {
+        model: modelCandidate,
+        messages: params.messages,
+        temperature: 0.3,
+        max_tokens: 8000,
+      };
+
+      if (params.responseFormatJson) {
+        bodyPayload.response_format = { type: 'json_object' };
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(bodyPayload),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        console.warn(`[Groq API] Model ${modelCandidate} returned HTTP ${response.status}: ${errText}`);
+        lastError = new Error(`Groq (${modelCandidate}) HTTP ${response.status}: ${errText}`);
+        continue;
+      }
+
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content || '';
+      return {
+        content,
+        modelUsed: modelCandidate,
+      };
+    } catch (err: any) {
+      console.warn(`[Groq API] Execution error on model ${modelCandidate}:`, err);
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('Failed to obtain response from Groq Cloud models.');
+}
+
+/**
+ * Tier 2 & Tier 3 Failover: Executes chat completion request via OpenRouter API with automated model fallback chain.
+ * Endpoint: https://openrouter.ai/api/v1/chat/completions
+ * Headers: HTTP-Referer, X-Title: Easy-AI, Authorization: Bearer <KEY>
+ */
+export async function callOpenRouterApi(params: {
+  messages: any[];
+  model?: string;
+  candidateModels?: string[];
+  openRouterKey?: string;
+  responseFormatJson?: boolean;
+}): Promise<{ content: string; modelUsed: string }> {
+  const apiKey = getOpenRouterApiKey(params.openRouterKey);
+  const modelsToTry = params.candidateModels
+    ? params.candidateModels
+    : params.model
+    ? [params.model, ...OPENROUTER_TIER2_MODELS.filter((m) => m !== params.model)]
+    : OPENROUTER_TIER2_MODELS;
+
+  const endpoint = 'https://openrouter.ai/api/v1/chat/completions';
+  const referer = typeof window !== 'undefined' && window.location?.origin ? window.location.origin : 'https://easy-ai.app';
+
+  let lastError: any = null;
+
+  for (const modelCandidate of modelsToTry) {
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'HTTP-Referer': referer,
+        'X-Title': 'Easy-AI',
+      };
+      if (apiKey) {
+        headers['Authorization'] = `Bearer ${apiKey}`;
+      }
+
+      const bodyPayload: any = {
+        model: modelCandidate,
+        messages: params.messages,
+        temperature: 0.3,
+      };
+
+      if (params.responseFormatJson) {
+        bodyPayload.response_format = { type: 'json_object' };
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(bodyPayload),
+      });
+
+      if (!response.ok) {
+        const errText = await response.text().catch(() => '');
+        console.warn(`[OpenRouter] Model ${modelCandidate} returned HTTP ${response.status}: ${errText}`);
+        lastError = new Error(`OpenRouter (${modelCandidate}) HTTP ${response.status}: ${errText}`);
+        continue;
+      }
+
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content || '';
+      return {
+        content,
+        modelUsed: modelCandidate,
+      };
+    } catch (err: any) {
+      console.warn(`[OpenRouter] Network or execution error on model ${modelCandidate}:`, err);
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('Failed to obtain response from OpenRouter fallback models.');
+}
+
+export interface MultiTierFailoverResult {
+  content: string;
+  provider: 'groq' | 'openrouter';
+  modelUsed: string;
+  tier: 1 | 2 | 3;
+  notice: string;
+}
+
+/**
+ * Multi-Tier Automatic Cascading Failover Pipeline:
+ * Priority:
+ *   Tier 1: Groq Cloud API (Immediate high-throughput inference)
+ *   Tier 2: OpenRouter API (Primary flagship models)
+ *   Tier 3: OpenRouter Free Models (Zero-cost emergency models)
+ */
+export async function executeMultiTierFailover(params: {
+  messages: ChatMessage[];
+  systemInstruction?: string;
+  targetLanguage?: TargetLanguage;
+  responseFormatJson?: boolean;
+  groqKey?: string;
+  openRouterKey?: string;
+  onFailoverStatus?: (tier: 1 | 2 | 3, provider: 'groq' | 'openrouter', message: string) => void;
+}): Promise<MultiTierFailoverResult> {
+  const {
+    messages,
+    systemInstruction,
+    targetLanguage = 'ar-EG',
+    responseFormatJson,
+    groqKey,
+    openRouterKey,
+    onFailoverStatus,
+  } = params;
+
+  const failureLog: string[] = [];
+
+  // ==========================================
+  // TIER 1: Groq Cloud API (Ultra-Fast)
+  // ==========================================
+  try {
+    const groqApiKey = getGroqApiKey(groqKey);
+    if (groqApiKey) {
+      onFailoverStatus?.(
+        1,
+        'groq',
+        '⚡ سيرفر Gemini مضغوط، جاري المتابعة فوراً عبر Groq Cloud (Tier 1)...'
+      );
+      const groqMessages = convertMessagesToOpenAIFormat(
+        messages,
+        systemInstruction,
+        targetLanguage,
+        true // Text-friendly compatibility for Groq
+      );
+      const res = await callGroqApi({
+        messages: groqMessages,
+        groqKey,
+        responseFormatJson,
+      });
+
+      return {
+        content: res.content,
+        provider: 'groq',
+        modelUsed: `groq/${res.modelUsed}`,
+        tier: 1,
+        notice: 'تم التحويل التلقائي بنجاح إلى Groq Cloud لضمان استمرارية الجلسة الفورية',
+      };
+    } else {
+      console.info('[Failover] Groq API Key not configured; gracefully bypassing to Tier 2 (OpenRouter).');
+      failureLog.push('Tier 1 (Groq): No API key configured');
+    }
+  } catch (groqErr: any) {
+    console.warn('[Failover Tier 1 (Groq) Failed]:', groqErr);
+    failureLog.push(`Tier 1 (Groq): ${groqErr.message || groqErr}`);
+  }
+
+  // ==========================================
+  // TIER 2: OpenRouter API (Primary Models)
+  // ==========================================
+  try {
+    onFailoverStatus?.(
+      2,
+      'openrouter',
+      '⚡ جاري المتابعة السلسة عبر OpenRouter (Tier 2)...'
+    );
+    const openRouterMessages = convertMessagesToOpenAIFormat(
+      messages,
+      systemInstruction,
+      targetLanguage,
+      false
+    );
+    const res = await callOpenRouterApi({
+      messages: openRouterMessages,
+      candidateModels: OPENROUTER_TIER2_MODELS,
+      openRouterKey,
+      responseFormatJson,
+    });
+
+    return {
+      content: res.content,
+      provider: 'openrouter',
+      modelUsed: `openrouter/${res.modelUsed}`,
+      tier: 2,
+      notice: 'تم التحويل التلقائي بنجاح إلى OpenRouter (Tier 2) لضمان استمرارية الجلسة',
+    };
+  } catch (openRouterErr: any) {
+    console.warn('[Failover Tier 2 (OpenRouter Primary) Failed]:', openRouterErr);
+    failureLog.push(`Tier 2 (OpenRouter Primary): ${openRouterErr.message || openRouterErr}`);
+  }
+
+  // ==========================================
+  // TIER 3: OpenRouter API (Free Fallback Models)
+  // ==========================================
+  try {
+    onFailoverStatus?.(
+      3,
+      'openrouter',
+      '⚡ جاري المتابعة عبر نماذج OpenRouter المجانية البديلة (Tier 3)...'
+    );
+    const openRouterMessages = convertMessagesToOpenAIFormat(
+      messages,
+      systemInstruction,
+      targetLanguage,
+      false
+    );
+    const res = await callOpenRouterApi({
+      messages: openRouterMessages,
+      candidateModels: OPENROUTER_TIER3_FREE_MODELS,
+      openRouterKey,
+      responseFormatJson,
+    });
+
+    return {
+      content: res.content,
+      provider: 'openrouter',
+      modelUsed: `openrouter/${res.modelUsed}`,
+      tier: 3,
+      notice: 'تم إكمال الطلب بنجاح عبر مسار الطوارئ المجاني في OpenRouter (Tier 3)',
+    };
+  } catch (tier3Err: any) {
+    console.warn('[Failover Tier 3 (OpenRouter Free) Failed]:', tier3Err);
+    failureLog.push(`Tier 3 (OpenRouter Free): ${tier3Err.message || tier3Err}`);
+  }
+
+  throw new Error(
+    `All failover tiers exhausted.\n${failureLog.join('\n')}`
+  );
 }
 
 /**
@@ -225,75 +722,131 @@ export function buildMessageParts(msg: { content?: string; attachments?: Process
 
 /**
  * Sends chat request directly to Google Gemini API (no proxies) with Google Search Grounding for academic validation.
+ * Automatically intercepts HTTP 429 ("Resource Exhausted", "You exceeded your current quota"), 503,
+ * or persistent network failures from the Gemini API and seamlessly redirects to OpenRouter endpoint.
  */
 export async function sendDirectChatMessage(params: {
   messages: ChatMessage[];
   model: string;
   targetLanguage?: TargetLanguage;
   enableSearchGrounding?: boolean;
+  groqKey?: string;
+  openRouterKey?: string;
+  onFailoverStatus?: (tier: 1 | 2 | 3, provider: 'groq' | 'openrouter', message: string) => void;
 }): Promise<DirectApiResult<string>> {
-  const { messages, model, targetLanguage = 'ar-EG', enableSearchGrounding = true } = params;
+  const {
+    messages,
+    model,
+    targetLanguage = 'ar-EG',
+    enableSearchGrounding = true,
+    groqKey,
+    openRouterKey,
+    onFailoverStatus,
+  } = params;
 
-  // Build multi-turn contents array with PDF and multimodal inlineData support
-  const contents = messages.map((m) => ({
-    role: m.role === 'model' || (m.role as any) === 'assistant' ? 'model' : 'user',
-    parts: buildMessageParts(m),
-  }));
+  try {
+    // Build multi-turn contents array with PDF and multimodal inlineData support
+    const contents = messages.map((m) => ({
+      role: m.role === 'model' || (m.role as any) === 'assistant' ? 'model' : 'user',
+      parts: buildMessageParts(m),
+    }));
 
-  const academicGroundingPrompt = enableSearchGrounding
-    ? `
+    const academicGroundingPrompt = enableSearchGrounding
+      ? `
 ACADEMIC GOOGLE SEARCH GROUNDING ACTIVE:
 - Use real-time Google Search grounding to verify all physical constants (CODATA exact values, Planck's constant h, speed of light c, elementary charge e, Boltzmann constant k_B, universal gas constant R, acceleration due to gravity g, permittivity of free space ε0, etc.).
 - When discussing engineering equations, formulas, mathematical theorems, or medical dosage formulas, cross-reference standard conventions and verify edge cases.
 - For recent scientific breakthroughs, AI models, modern benchmarks, or state-of-the-art discoveries, use the Google Search grounding tool to provide fresh, verified academic validation.
 - Highlight verified constants and cite key academic/research sources when applicable.`
-    : '';
+      : '';
 
-  const payload: any = {
-    contents,
-    systemInstruction: {
-      parts: [
-        {
-          text: `${CHAT_SYSTEM_INSTRUCTION}\n${EGYPTIAN_ARABIC_DIRECTIVE}\nTarget Language: ${targetLanguage}${academicGroundingPrompt}`,
-        },
-      ],
-    },
-    generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 8192,
-    },
-  };
+    const payload: any = {
+      contents,
+      systemInstruction: {
+        parts: [
+          {
+            text: `${CHAT_SYSTEM_INSTRUCTION}\n${EGYPTIAN_ARABIC_DIRECTIVE}\nTarget Language: ${targetLanguage}${academicGroundingPrompt}`,
+          },
+        ],
+      },
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 8192,
+      },
+    };
 
-  if (enableSearchGrounding) {
-    payload.tools = [{ googleSearch: {} }];
+    if (enableSearchGrounding) {
+      payload.tools = [{ googleSearch: {} }];
+    }
+
+    const { data, modelUsed, switchedDueTo404, switchedFrom } = await callGoogleGenerativeLanguageApi(
+      model,
+      payload
+    );
+
+    const replyText =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p: any) => p.text)
+        .filter(Boolean)
+        .join('') || '';
+
+    const groundingMetadata: GroundingMetadata | undefined = data?.candidates?.[0]?.groundingMetadata;
+    const isGrounded = Boolean(
+      groundingMetadata &&
+        ((groundingMetadata.webSearchQueries && groundingMetadata.webSearchQueries.length > 0) ||
+          (groundingMetadata.groundingChunks && groundingMetadata.groundingChunks.length > 0))
+    );
+
+    return {
+      result: replyText,
+      modelUsed,
+      switchedDueTo404,
+      switchedFrom,
+      groundingMetadata,
+      isGrounded,
+    };
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    const statusMatch = errorMsg.match(/HTTP\s*(\d+)/i);
+    const status = statusMatch ? parseInt(statusMatch[1], 10) : undefined;
+
+    // Requirement 1 & 2: Cascading Failover Priority
+    // Intercept HTTP 429 ("Resource Exhausted", "You exceeded your current quota"), 503, or network timeout.
+    // Trigger Cascading Failover Pipeline: Tier 1 (Groq) -> Tier 2 (OpenRouter Primary) -> Tier 3 (OpenRouter Free).
+    if (isRateLimitOrQuotaError(status, errorMsg)) {
+      console.warn(
+        `[Gemini Quota/Error Interception] Caught quota/rate-limit error (${errorMsg}). Triggering cascading multi-tier failover (Tier 1 Groq -> Tier 2 OpenRouter -> Tier 3 Free Models)...`
+      );
+
+      try {
+        const failoverRes = await executeMultiTierFailover({
+          messages,
+          systemInstruction: `${CHAT_SYSTEM_INSTRUCTION}\n${EGYPTIAN_ARABIC_DIRECTIVE}\nTarget Language: ${targetLanguage}`,
+          targetLanguage,
+          groqKey,
+          openRouterKey,
+          onFailoverStatus,
+        });
+
+        return {
+          result: failoverRes.content,
+          modelUsed: failoverRes.modelUsed,
+          switchedDueTo404: false,
+          switchedDueToQuota: true,
+          fallbackProvider: failoverRes.provider,
+          fallbackTier: failoverRes.tier,
+          fallbackNotice: failoverRes.notice,
+        };
+      } catch (failoverErr: any) {
+        console.error('[Multi-Tier Failover Exhausted]:', failoverErr);
+        throw new Error(
+          `Google Gemini quota exhausted (${errorMsg}), and cascading fallback pipeline failed: ${failoverErr.message || failoverErr}`
+        );
+      }
+    }
+
+    throw error;
   }
-
-  const { data, modelUsed, switchedDueTo404, switchedFrom } = await callGoogleGenerativeLanguageApi(
-    model,
-    payload
-  );
-
-  const replyText =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => p.text)
-      .filter(Boolean)
-      .join('') || '';
-
-  const groundingMetadata: GroundingMetadata | undefined = data?.candidates?.[0]?.groundingMetadata;
-  const isGrounded = Boolean(
-    groundingMetadata &&
-      ((groundingMetadata.webSearchQueries && groundingMetadata.webSearchQueries.length > 0) ||
-        (groundingMetadata.groundingChunks && groundingMetadata.groundingChunks.length > 0))
-  );
-
-  return {
-    result: replyText,
-    modelUsed,
-    switchedDueTo404,
-    switchedFrom,
-    groundingMetadata,
-    isGrounded,
-  };
 }
 
 /**
@@ -308,6 +861,9 @@ export async function analyzeDirectCurriculum(params: {
   rawContent: string;
   model: string;
   attachments?: ProcessedFile[];
+  groqKey?: string;
+  openRouterKey?: string;
+  onFailoverStatus?: (tier: 1 | 2 | 3, provider: 'groq' | 'openrouter', message: string) => void;
 }): Promise<DirectApiResult<CurriculumAnalysisResult>> {
   const {
     title,
@@ -318,6 +874,9 @@ export async function analyzeDirectCurriculum(params: {
     rawContent,
     model,
     attachments,
+    groqKey,
+    openRouterKey,
+    onFailoverStatus,
   } = params;
 
   const userPrompt = `DISCIPLINE: ${discipline || 'Academic Curriculum'}
@@ -393,36 +952,105 @@ Output must be strictly valid JSON without any markdown formatting wrappers.`,
     },
   };
 
-  const { data, modelUsed, switchedDueTo404, switchedFrom } = await callGoogleGenerativeLanguageApi(
-    model,
-    payload
-  );
-
-  let rawJsonText =
-    data?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => p.text)
-      .filter(Boolean)
-      .join('') || '{}';
-
-  rawJsonText = rawJsonText.trim();
-  if (rawJsonText.startsWith('```json')) {
-    rawJsonText = rawJsonText.replace(/^```json\s*/, '').replace(/```\s*$/, '');
-  } else if (rawJsonText.startsWith('```')) {
-    rawJsonText = rawJsonText.replace(/^```\s*/, '').replace(/```\s*$/, '');
-  }
-
-  let docResult: CurriculumAnalysisResult;
   try {
-    docResult = JSON.parse(rawJsonText);
-  } catch (parseErr) {
-    console.error('Failed to parse Gemini JSON output:', parseErr, rawJsonText);
-    throw new Error('Failed to parse synthesized curriculum JSON from Gemini.');
-  }
+    const { data, modelUsed, switchedDueTo404, switchedFrom } = await callGoogleGenerativeLanguageApi(
+      model,
+      payload
+    );
 
-  return {
-    result: docResult,
-    modelUsed,
-    switchedDueTo404,
-    switchedFrom,
-  };
+    let rawJsonText =
+      data?.candidates?.[0]?.content?.parts
+        ?.map((p: any) => p.text)
+        .filter(Boolean)
+        .join('') || '{}';
+
+    rawJsonText = rawJsonText.trim();
+    if (rawJsonText.startsWith('```json')) {
+      rawJsonText = rawJsonText.replace(/^```json\s*/, '').replace(/```\s*$/, '');
+    } else if (rawJsonText.startsWith('```')) {
+      rawJsonText = rawJsonText.replace(/^```\s*/, '').replace(/```\s*$/, '');
+    }
+
+    let docResult: CurriculumAnalysisResult;
+    try {
+      docResult = JSON.parse(rawJsonText);
+    } catch (parseErr) {
+      console.error('Failed to parse Gemini JSON output:', parseErr, rawJsonText);
+      throw new Error('Failed to parse synthesized curriculum JSON from Gemini.');
+    }
+
+    return {
+      result: docResult,
+      modelUsed,
+      switchedDueTo404,
+      switchedFrom,
+    };
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    const statusMatch = errorMsg.match(/HTTP\s*(\d+)/i);
+    const status = statusMatch ? parseInt(statusMatch[1], 10) : undefined;
+
+    if (isRateLimitOrQuotaError(status, errorMsg)) {
+      console.warn(
+        `[analyzeDirectCurriculum] Gemini quota/rate-limit error (${errorMsg}). Triggering cascading multi-tier failover for curriculum synthesis...`
+      );
+
+      try {
+        const curriculumSystem = `You are an Elite Academic Curriculum Engine for "Easy".
+Synthesize the provided material into a full comprehensive academic curriculum.
+Output MUST be strictly valid JSON without markdown formatting wrappers or prelude.
+Structure must include:
+- title, subtitle, targetDiscipline, targetLanguage, academicLevel, executiveSummary
+- coreModules: array of { id, title, icon, estimatedTime, overview, learningObjectives, conceptualFramework, practicalSignificance, commonMisconceptions }
+- masterFormulaLedger: array of { id, formulaLatex, title, description, application, variables, category }
+- comparativeMatrices: array of { id, title, description, columns, rows }
+- examinationTraps: array of { id, trapTitle, misleadingIntuition, correctPrinciple, memoryAnchor }
+- laboratoryProtocols: array of { id, title, objective, steps, analyticalChecks, criticalSafetyNotes }
+- selfAssessmentDrills: array of { id, prompt, difficulty, answerExplanation, keyEquationRef }`;
+
+        const dummyMessage: ChatMessage = {
+          id: `curriculum-task-${Date.now()}`,
+          role: 'user',
+          content: userPrompt,
+          timestamp: new Date().toLocaleTimeString(),
+          attachments,
+        };
+
+        const failoverRes = await executeMultiTierFailover({
+          messages: [dummyMessage],
+          systemInstruction: curriculumSystem,
+          targetLanguage,
+          responseFormatJson: true,
+          groqKey,
+          openRouterKey,
+          onFailoverStatus,
+        });
+
+        let cleanJson = failoverRes.content.trim();
+        if (cleanJson.startsWith('```json')) {
+          cleanJson = cleanJson.replace(/^```json\s*/, '').replace(/```\s*$/, '');
+        } else if (cleanJson.startsWith('```')) {
+          cleanJson = cleanJson.replace(/^```\s*/, '').replace(/```\s*$/, '');
+        }
+
+        const docResult: CurriculumAnalysisResult = JSON.parse(cleanJson);
+        return {
+          result: docResult,
+          modelUsed: failoverRes.modelUsed,
+          switchedDueTo404: false,
+          switchedDueToQuota: true,
+          fallbackProvider: failoverRes.provider,
+          fallbackTier: failoverRes.tier,
+          fallbackNotice: failoverRes.notice,
+        };
+      } catch (failoverErr: any) {
+        console.error('[Curriculum Multi-Tier Failover Exhausted]:', failoverErr);
+        throw new Error(
+          `Google Gemini quota reached (${errorMsg}), and cascading fallback pipeline failed: ${failoverErr.message || failoverErr}`
+        );
+      }
+    }
+
+    throw error;
+  }
 }

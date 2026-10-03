@@ -282,22 +282,40 @@ export default function App() {
           ? `Cross-Document Synthesis (${pdfFiles.length} Lecture PDFs)`
           : prompt.slice(0, 80) || attachments[0]?.name || 'Academic Curriculum Synthesis';
 
-        // Requirement 1 & 4: Direct Google Gemini API Call with Multimodal/PDF inputs
-        const { result: docResult, modelUsed, switchedDueTo404, switchedFrom } =
-          await analyzeDirectCurriculum({
-            title: synthesisTitle,
-            discipline: 'Academic Science & Engineering',
-            targetLanguage: currentLanguage,
-            level: 'Undergraduate / Professional',
-            focus: 'Strict Anti-Repetition & Mathematical Precision',
-            rawContent,
-            model: selectedModel,
-            attachments: pdfFiles,
-          });
+        // Requirement 1 & 4: Direct Google Gemini API Call with Multimodal/PDF inputs and Cascading Multi-Tier Failover
+        const {
+          result: docResult,
+          modelUsed,
+          switchedDueTo404,
+          switchedFrom,
+          switchedDueToQuota,
+          fallbackProvider,
+          fallbackTier,
+          fallbackNotice,
+        } = await analyzeDirectCurriculum({
+          title: synthesisTitle,
+          discipline: 'Academic Science & Engineering',
+          targetLanguage: currentLanguage,
+          level: 'Undergraduate / Professional',
+          focus: 'Strict Anti-Repetition & Mathematical Precision',
+          rawContent,
+          model: selectedModel,
+          attachments: pdfFiles,
+          groqKey: externalKeys.groqKey,
+          openRouterKey: externalKeys.openRouterKey,
+          onFailoverStatus: (tier, provider, message) => {
+            showNotification('warning', message);
+          },
+        });
 
         setLastModelUsed(modelUsed);
 
-        if (switchedDueTo404) {
+        if (switchedDueToQuota) {
+          showNotification(
+            'success',
+            `✓ استمرارية الجلسة: تم توليد المنهج بنجاح عبر (${modelUsed}) [Tier ${fallbackTier || 1}: ${fallbackProvider?.toUpperCase()}]`
+          );
+        } else if (switchedDueTo404) {
           setSelectedModel(modelUsed);
           showNotification(
             'warning',
@@ -322,6 +340,10 @@ export default function App() {
           modelUsed,
           switchedDueTo404,
           switchedFrom,
+          switchedDueToQuota,
+          fallbackProvider,
+          fallbackTier,
+          fallbackNotice,
         };
 
         setSessions((prev) =>
@@ -338,18 +360,39 @@ export default function App() {
           )
         );
       } else {
-        // Requirement 1 & 2: Direct Google Gemini API conversational inference with Google Search Grounding and 404 retry
-        const { result: replyText, modelUsed, switchedDueTo404, switchedFrom, groundingMetadata, isGrounded } =
-          await sendDirectChatMessage({
-            messages: updatedMessages,
-            model: selectedModel,
-            targetLanguage: currentLanguage,
-            enableSearchGrounding: searchGrounding,
-          });
+        // Requirement 1, 2 & Cascading Failover: Direct Google Gemini API conversational inference
+        // If 429/503/Quota is hit, automatically cascades: Tier 1 (Groq) -> Tier 2 (OpenRouter) -> Tier 3 (OpenRouter Free)
+        const {
+          result: replyText,
+          modelUsed,
+          switchedDueTo404,
+          switchedFrom,
+          groundingMetadata,
+          isGrounded,
+          switchedDueToQuota,
+          fallbackProvider,
+          fallbackTier,
+          fallbackNotice,
+        } = await sendDirectChatMessage({
+          messages: updatedMessages,
+          model: selectedModel,
+          targetLanguage: currentLanguage,
+          enableSearchGrounding: searchGrounding,
+          groqKey: externalKeys.groqKey,
+          openRouterKey: externalKeys.openRouterKey,
+          onFailoverStatus: (tier, provider, message) => {
+            showNotification('warning', message);
+          },
+        });
 
         setLastModelUsed(modelUsed);
 
-        if (switchedDueTo404) {
+        if (switchedDueToQuota) {
+          showNotification(
+            'success',
+            `✓ استمرارية الجلسة: تم إكمال الرد بنجاح عبر (${modelUsed}) [Tier ${fallbackTier || 1}: ${fallbackProvider?.toUpperCase()}]`
+          );
+        } else if (switchedDueTo404) {
           setSelectedModel(modelUsed);
           showNotification(
             'warning',
@@ -369,6 +412,10 @@ export default function App() {
           switchedFrom,
           groundingMetadata,
           isGrounded,
+          switchedDueToQuota,
+          fallbackProvider,
+          fallbackTier,
+          fallbackNotice,
         };
 
         setSessions((prev) =>

@@ -39,6 +39,10 @@ export interface ChatMessage {
   modelUsed?: string;
   switchedDueTo404?: boolean;
   switchedFrom?: string;
+  switchedDueToQuota?: boolean;
+  fallbackProvider?: 'gemini' | 'groq' | 'openrouter';
+  fallbackTier?: 1 | 2 | 3;
+  fallbackNotice?: string;
   failoverNotice?: string;
   isStreaming?: boolean;
   durationMs?: number;

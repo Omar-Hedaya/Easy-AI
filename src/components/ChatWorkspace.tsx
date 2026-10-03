@@ -369,6 +369,21 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                               {msg.modelUsed}
                             </span>
                           )}
+                          {msg.switchedDueToQuota && (
+                            <span
+                              className={`flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.5 rounded border shadow-xs ${
+                                msg.fallbackProvider === 'groq'
+                                  ? 'bg-amber-950/70 border-amber-600/50 text-amber-300'
+                                  : msg.fallbackTier === 3
+                                  ? 'bg-emerald-950/70 border-emerald-600/50 text-emerald-300'
+                                  : 'bg-purple-950/70 border-purple-600/50 text-purple-300'
+                              }`}
+                              title={msg.fallbackNotice || 'Automatic failover triggered'}
+                            >
+                              <Zap className="w-2.5 h-2.5 text-amber-400" />
+                              <span>{msg.fallbackProvider === 'groq' ? 'Groq Tier-1' : `OpenRouter T${msg.fallbackTier || 2}`}</span>
+                            </span>
+                          )}
                           {(msg.groundingMetadata || msg.isGrounded) && (
                             <span
                               className="flex items-center gap-1 font-mono text-[10px] text-cyan-300 bg-cyan-950/70 border border-cyan-800/50 px-1.5 py-0.5 rounded shadow-xs"
@@ -431,6 +446,35 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           </p>
                           <div className="text-[10px] text-emerald-400/90 font-medium flex items-center gap-1">
                             <span>✓ All uploaded PDF attachments and multimodal context were preserved 100%.</span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Inline Multi-Tier Quota & Rate-Limit Failover Banner */}
+                    {!isUser && msg.switchedDueToQuota && (
+                      <div className="mx-3.5 mt-3 p-3 rounded-xl bg-gradient-to-r from-amber-950/50 via-slate-900/90 to-blue-950/50 border border-amber-600/40 text-amber-200 text-xs flex items-start gap-2.5 animate-in fade-in shadow-inner">
+                        <div className="p-1 rounded-lg bg-amber-500/20 text-amber-400 mt-0.5 shrink-0">
+                          <Zap className="w-4 h-4" />
+                        </div>
+                        <div className="space-y-1 text-[11px] leading-relaxed flex-1">
+                          <div className="font-bold text-amber-300 flex items-center justify-between flex-wrap gap-1">
+                            <span className="flex items-center gap-1.5">
+                              <span>مسار الاستمرارية التلقائي (Multi-Tier Resiliency Active)</span>
+                              <span className="px-1.5 py-0.2 rounded font-mono text-[9px] bg-amber-900/80 text-amber-100 border border-amber-700/60 font-semibold">
+                                {msg.fallbackTier ? `Tier ${msg.fallbackTier}` : 'Active'}
+                              </span>
+                            </span>
+                            <span className="text-[10px] font-mono text-cyan-300 uppercase px-1.5 py-0.2 rounded bg-cyan-950/60 border border-cyan-800/40">
+                              {msg.fallbackProvider || 'external-provider'}
+                            </span>
+                          </div>
+                          <p className="text-slate-300">
+                            {msg.fallbackNotice || 'تم تحويل الطلب تلقائياً لتجاوز حدود الحصة أو ضغط السيرفر دون انقطاع الجلسة.'}
+                          </p>
+                          <div className="text-[10px] text-emerald-400/90 font-medium flex items-center gap-2 flex-wrap">
+                            <span>✓ تم الحفاظ على سياق المحاضرات والملفات والأسلوب الأكاديمي بنسبة 100%.</span>
+                            <span className="text-slate-400 font-mono text-[9px]">({msg.modelUsed})</span>
                           </div>
                         </div>
                       </div>

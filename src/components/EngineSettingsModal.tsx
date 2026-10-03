@@ -106,19 +106,61 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
             </div>
           </div>
 
-          {/* External Fallback Provider Keys */}
+          {/* Multi-Tier Cascading Failover Pipeline */}
           <div className="space-y-3">
-            <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
-              <Key className="w-3.5 h-3.5 text-amber-400" />
-              <span>Optional External Fallback API Keys</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-200">
+                <Key className="w-3.5 h-3.5 text-amber-400" />
+                <span>Multi-Tier Cascading Failover Pipeline</span>
+              </div>
+              <span className="text-[10px] font-mono text-cyan-300 px-2 py-0.5 rounded bg-cyan-950/80 border border-cyan-800/40">
+                Zero-Downtime Architecture
+              </span>
             </div>
-            <p className="text-[11px] text-slate-400">
-              Only attempted if provided below; otherwise, inference stays strictly within the 6 available Gemini models above.
-            </p>
 
+            <div className="p-3 rounded-xl bg-slate-950 border border-slate-800 text-[11px] text-slate-300 space-y-2">
+              <div className="font-semibold text-slate-200">Cascading Priority Chain:</div>
+              <div className="space-y-1.5 font-mono text-[10px]">
+                <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-slate-800">
+                  <span className="text-cyan-300 font-bold">1. Google Gemini API (Primary)</span>
+                  <span className="text-slate-400">Direct inference + 404 auto-retry</span>
+                </div>
+                <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-amber-800/40">
+                  <span className="text-amber-300 font-bold">2. Tier 1: Groq Cloud API</span>
+                  <span className="text-slate-400">llama-3.3-70b-versatile / 8b-instant</span>
+                </div>
+                <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-purple-800/40">
+                  <span className="text-purple-300 font-bold">3. Tier 2: OpenRouter API</span>
+                  <span className="text-slate-400">deepseek/deepseek-chat</span>
+                </div>
+                <div className="flex items-center justify-between p-1.5 rounded bg-slate-900 border border-emerald-800/40">
+                  <span className="text-emerald-300 font-bold">4. Tier 3: OpenRouter Free Models</span>
+                  <span className="text-slate-400">gemini-2.0-flash-exp:free / llama-3.3:free</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Tier 1: Groq Key */}
             <div>
-              <label className="block text-[11px] text-slate-400 mb-1">
-                OpenRouter API Key (Optional external failover):
+              <label className="block text-[11px] text-slate-300 font-medium mb-1">
+                Tier 1 Fallback: Groq API Key (<code className="text-amber-300">VITE_GROQ_API_KEY</code>):
+              </label>
+              <input
+                type="password"
+                value={groqKey}
+                onChange={(e) => setGroqKey(e.target.value)}
+                placeholder="gsk_..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-amber-500"
+              />
+              <span className="text-[10px] text-slate-500 mt-0.5 block">
+                Endpoint: https://api.groq.com/openai/v1/chat/completions (Ultra-fast failover)
+              </span>
+            </div>
+
+            {/* Tier 2 & 3: OpenRouter Key */}
+            <div>
+              <label className="block text-[11px] text-slate-300 font-medium mb-1">
+                Tier 2 & 3 Fallback: OpenRouter API Key (<code className="text-cyan-300">VITE_OPENROUTER_API_KEY</code>):
               </label>
               <input
                 type="password"
@@ -127,26 +169,16 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
                 placeholder="sk-or-v1-..."
                 className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
               />
-            </div>
-
-            <div>
-              <label className="block text-[11px] text-slate-400 mb-1">
-                Groq API Key (Optional ultra-fast failover):
-              </label>
-              <input
-                type="password"
-                value={groqKey}
-                onChange={(e) => setGroqKey(e.target.value)}
-                placeholder="gsk_..."
-                className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500"
-              />
+              <span className="text-[10px] text-slate-500 mt-0.5 block">
+                Endpoint: https://openrouter.ai/api/v1/chat/completions (Includes free tier fallback models)
+              </span>
             </div>
           </div>
 
           <div className="p-3 rounded-lg bg-blue-500/10 border border-blue-500/20 text-[11px] text-blue-300 flex items-start gap-2">
             <Info className="w-4 h-4 shrink-0 text-blue-400 mt-0.5" />
             <span>
-              If any model returns <strong>HTTP 404 (Not Found / Model Unavailable)</strong>, <strong>503 (High Demand)</strong>, or <strong>429 (Rate Limit)</strong>, the engine triggers immediate automatic failover down the chain without failing your request.
+              Whenever Google Gemini encounters <strong>HTTP 429 ("Resource Exhausted" / Quota limit)</strong>, <strong>503 (High Demand)</strong>, or network timeouts, the pipeline immediately transfers inference to Tier 1 (Groq), then Tier 2 (OpenRouter), and Tier 3 (Free models) without breaking your session.
             </span>
           </div>
         </div>
