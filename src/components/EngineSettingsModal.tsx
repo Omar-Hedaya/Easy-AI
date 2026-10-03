@@ -17,16 +17,35 @@ export const EngineSettingsModal: React.FC<EngineSettingsModalProps> = ({
   onSaveKeys,
   lastModelUsed = 'gemini-3.8-flash',
 }) => {
-  const [openRouterKey, setOpenRouterKey] = useState(externalKeys.openRouterKey || '');
-  const [groqKey, setGroqKey] = useState(externalKeys.groqKey || '');
+  const [openRouterKey, setOpenRouterKey] = useState(
+    () => externalKeys.openRouterKey || localStorage.getItem('openrouter_api_key') || ''
+  );
+  const [groqKey, setGroqKey] = useState(
+    () => externalKeys.groqKey || localStorage.getItem('groq_api_key') || ''
+  );
   const [saved, setSaved] = useState(false);
 
   if (!isOpen) return null;
 
   const handleSave = () => {
+    const cleanedGroq = groqKey.trim() || undefined;
+    const cleanedOpenRouter = openRouterKey.trim() || undefined;
+
+    if (cleanedGroq) {
+      localStorage.setItem('groq_api_key', cleanedGroq);
+    } else {
+      localStorage.removeItem('groq_api_key');
+    }
+
+    if (cleanedOpenRouter) {
+      localStorage.setItem('openrouter_api_key', cleanedOpenRouter);
+    } else {
+      localStorage.removeItem('openrouter_api_key');
+    }
+
     onSaveKeys({
-      openRouterKey: openRouterKey.trim() || undefined,
-      groqKey: groqKey.trim() || undefined,
+      openRouterKey: cleanedOpenRouter,
+      groqKey: cleanedGroq,
     });
     setSaved(true);
     setTimeout(() => {

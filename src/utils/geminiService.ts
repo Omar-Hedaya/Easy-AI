@@ -78,31 +78,43 @@ export const OPENROUTER_FALLBACK_MODELS = OPENROUTER_TIER3_FREE_MODELS;
  * Resolves Groq API Key from:
  * 1. Explicit parameter
  * 2. VITE_GROQ_API_KEY environment variable
- * 3. Settings localStorage ('easy_external_keys' or 'groq_api_key')
+ * 3. Settings localStorage ('groq_api_key' or 'easy_external_keys')
  */
 export function getGroqApiKey(customKey?: string): string {
+  // 1. Explicit parameter
   if (customKey && typeof customKey === 'string' && customKey.trim()) {
-    return customKey.trim();
+    return customKey.trim().replace(/^["']|["']$/g, '');
   }
+
+  // 2. Environment variable VITE_GROQ_API_KEY
   const envKey = import.meta.env.VITE_GROQ_API_KEY;
   if (envKey && typeof envKey === 'string' && envKey.trim() && envKey !== 'MY_GROQ_API_KEY') {
-    return envKey.trim();
+    return envKey.trim().replace(/^["']|["']$/g, '');
   }
+
+  // 3. User settings localStorage 'groq_api_key'
+  try {
+    const directStored = localStorage.getItem('groq_api_key');
+    if (directStored && typeof directStored === 'string' && directStored.trim()) {
+      return directStored.trim().replace(/^["']|["']$/g, '');
+    }
+  } catch (e) {
+    console.warn('[Groq Key Resolution] Error reading groq_api_key from localStorage:', e);
+  }
+
+  // 4. User settings localStorage 'easy_external_keys' (object)
   try {
     const stored = localStorage.getItem('easy_external_keys');
     if (stored) {
       const parsed = JSON.parse(stored);
       if (parsed.groqKey && typeof parsed.groqKey === 'string' && parsed.groqKey.trim()) {
-        return parsed.groqKey.trim();
+        return parsed.groqKey.trim().replace(/^["']|["']$/g, '');
       }
     }
-    const directStored = localStorage.getItem('groq_api_key');
-    if (directStored && typeof directStored === 'string' && directStored.trim()) {
-      return directStored.trim();
-    }
   } catch (e) {
-    console.warn('[Groq] Error reading stored key:', e);
+    console.warn('[Groq Key Resolution] Error reading easy_external_keys from localStorage:', e);
   }
+
   return '';
 }
 
@@ -437,11 +449,20 @@ export async function executeMultiTierFailover(params: {
   const failureLog: string[] = [];
 
   // ==========================================
-  // TIER 1: Groq Cloud API (Ultra-Fast)
+  // TIER 1: Groq Cloud API (Strict Priority Fallback)
   // ==========================================
-  try {
-    const groqApiKey = getGroqApiKey(groqKey);
-    if (groqApiKey) {
+  const groqApiKey = getGroqApiKey(groqKey);
+
+  if (!groqApiKey) {
+    console.warn(
+      '[Failover Cascade] ⚠️ Groq (Tier 1) SKIPPED: Missing API key. Neither import.meta.env.VITE_GROQ_API_KEY nor localStorage ("groq_api_key" / "easy_external_keys") has a valid key. Proceeding strictly to Tier 2 (OpenRouter)...'
+    );
+    failureLog.push('Tier 1 (Groq): Skipped - Missing API key in environment or localStorage');
+  } else {
+    try {
+      console.log(
+        '[Failover Cascade] 🚀 GROQ PRIORITY EXECUTION: Strictly calling Groq Cloud API FIRST (Endpoint: https://api.groq.com/openai/v1/chat/completions)...'
+      );
       onFailoverStatus?.(
         1,
         'groq',
@@ -455,24 +476,24 @@ export async function executeMultiTierFailover(params: {
       );
       const res = await callGroqApi({
         messages: groqMessages,
-        groqKey,
+        groqKey: groqApiKey,
         responseFormatJson,
       });
 
+      console.log(`[Failover Cascade] ✅ GROQ Tier 1 Succeeded! Model used: ${res.modelUsed}`);
       return {
         content: res.content,
         provider: 'groq',
         modelUsed: `groq/${res.modelUsed}`,
         tier: 1,
-        notice: 'تم التحويل التلقائي بنجاح إلى Groq Cloud لضمان استمرارية الجلسة الفورية',
+        notice: 'GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)',
       };
-    } else {
-      console.info('[Failover] Groq API Key not configured; gracefully bypassing to Tier 2 (OpenRouter).');
-      failureLog.push('Tier 1 (Groq): No API key configured');
+    } catch (groqErr: any) {
+      console.warn(
+        `[Failover Cascade] ⚠️ Groq (Tier 1) execution failed (${groqErr?.message || groqErr}). Only now cascading to Tier 2 (OpenRouter)...`
+      );
+      failureLog.push(`Tier 1 (Groq): ${groqErr.message || groqErr}`);
     }
-  } catch (groqErr: any) {
-    console.warn('[Failover Tier 1 (Groq) Failed]:', groqErr);
-    failureLog.push(`Tier 1 (Groq): ${groqErr.message || groqErr}`);
   }
 
   // ==========================================

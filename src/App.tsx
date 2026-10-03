@@ -74,7 +74,14 @@ export default function App() {
   const [externalKeys, setExternalKeys] = useState<ExternalKeysConfig>(() => {
     try {
       const stored = localStorage.getItem('easy_external_keys');
-      return stored ? JSON.parse(stored) : {};
+      const parsed = stored ? JSON.parse(stored) : {};
+      const directGroq = localStorage.getItem('groq_api_key');
+      const directOpenRouter = localStorage.getItem('openrouter_api_key');
+      return {
+        ...parsed,
+        groqKey: parsed.groqKey || (directGroq?.trim() || undefined),
+        openRouterKey: parsed.openRouterKey || (directOpenRouter?.trim() || undefined),
+      };
     } catch {
       return {};
     }
@@ -144,6 +151,16 @@ export default function App() {
     setExternalKeys(keys);
     try {
       localStorage.setItem('easy_external_keys', JSON.stringify(keys));
+      if (keys.groqKey) {
+        localStorage.setItem('groq_api_key', keys.groqKey.trim());
+      } else {
+        localStorage.removeItem('groq_api_key');
+      }
+      if (keys.openRouterKey) {
+        localStorage.setItem('openrouter_api_key', keys.openRouterKey.trim());
+      } else {
+        localStorage.removeItem('openrouter_api_key');
+      }
     } catch (e) {
       console.warn('LocalStorage error:', e);
     }
@@ -311,10 +328,17 @@ export default function App() {
         setLastModelUsed(modelUsed);
 
         if (switchedDueToQuota) {
-          showNotification(
-            'success',
-            `✓ استمرارية الجلسة: تم توليد المنهج بنجاح عبر (${modelUsed}) [Tier ${fallbackTier || 1}: ${fallbackProvider?.toUpperCase()}]`
-          );
+          if (fallbackProvider === 'groq') {
+            showNotification(
+              'success',
+              '⚡ GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)'
+            );
+          } else {
+            showNotification(
+              'success',
+              `✓ استمرارية الجلسة: تم توليد المنهج بنجاح عبر (${modelUsed}) [Tier ${fallbackTier || 2}: ${fallbackProvider?.toUpperCase()}]`
+            );
+          }
         } else if (switchedDueTo404) {
           setSelectedModel(modelUsed);
           showNotification(
@@ -388,10 +412,17 @@ export default function App() {
         setLastModelUsed(modelUsed);
 
         if (switchedDueToQuota) {
-          showNotification(
-            'success',
-            `✓ استمرارية الجلسة: تم إكمال الرد بنجاح عبر (${modelUsed}) [Tier ${fallbackTier || 1}: ${fallbackProvider?.toUpperCase()}]`
-          );
+          if (fallbackProvider === 'groq') {
+            showNotification(
+              'success',
+              '⚡ GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)'
+            );
+          } else {
+            showNotification(
+              'success',
+              `✓ استمرارية الجلسة: تم إكمال الرد بنجاح عبر (${modelUsed}) [Tier ${fallbackTier || 2}: ${fallbackProvider?.toUpperCase()}]`
+            );
+          }
         } else if (switchedDueTo404) {
           setSelectedModel(modelUsed);
           showNotification(

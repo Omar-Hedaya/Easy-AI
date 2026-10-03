@@ -371,17 +371,17 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           )}
                           {msg.switchedDueToQuota && (
                             <span
-                              className={`flex items-center gap-1 font-mono text-[10px] px-1.5 py-0.5 rounded border shadow-xs ${
+                              className={`flex items-center gap-1 font-mono text-[10px] px-2 py-0.5 rounded border shadow-xs ${
                                 msg.fallbackProvider === 'groq'
-                                  ? 'bg-amber-950/70 border-amber-600/50 text-amber-300'
+                                  ? 'bg-amber-950/80 border-amber-500/80 text-amber-200 font-bold shadow-amber-900/40'
                                   : msg.fallbackTier === 3
                                   ? 'bg-emerald-950/70 border-emerald-600/50 text-emerald-300'
                                   : 'bg-purple-950/70 border-purple-600/50 text-purple-300'
                               }`}
-                              title={msg.fallbackNotice || 'Automatic failover triggered'}
+                              title={msg.fallbackNotice || (msg.fallbackProvider === 'groq' ? 'GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)' : 'Automatic failover triggered')}
                             >
-                              <Zap className="w-2.5 h-2.5 text-amber-400" />
-                              <span>{msg.fallbackProvider === 'groq' ? 'Groq Tier-1' : `OpenRouter T${msg.fallbackTier || 2}`}</span>
+                              <Zap className={`w-2.5 h-2.5 ${msg.fallbackProvider === 'groq' ? 'text-amber-400' : 'text-cyan-400'}`} />
+                              <span>{msg.fallbackProvider === 'groq' ? 'GROQ T1 (Ultra-Fast Active)' : `OpenRouter T${msg.fallbackTier || 2}`}</span>
                             </span>
                           )}
                           {(msg.groundingMetadata || msg.isGrounded) && (
@@ -453,28 +453,46 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
 
                     {/* Inline Multi-Tier Quota & Rate-Limit Failover Banner */}
                     {!isUser && msg.switchedDueToQuota && (
-                      <div className="mx-3.5 mt-3 p-3 rounded-xl bg-gradient-to-r from-amber-950/50 via-slate-900/90 to-blue-950/50 border border-amber-600/40 text-amber-200 text-xs flex items-start gap-2.5 animate-in fade-in shadow-inner">
-                        <div className="p-1 rounded-lg bg-amber-500/20 text-amber-400 mt-0.5 shrink-0">
+                      <div className={`mx-3.5 mt-3 p-3 rounded-xl border text-xs flex items-start gap-2.5 animate-in fade-in shadow-inner ${
+                        msg.fallbackProvider === 'groq'
+                          ? 'bg-gradient-to-r from-amber-950/70 via-slate-900/90 to-amber-950/40 border-amber-500/70 text-amber-200'
+                          : 'bg-gradient-to-r from-purple-950/50 via-slate-900/90 to-blue-950/50 border-purple-600/40 text-purple-200'
+                      }`}>
+                        <div className={`p-1.5 rounded-lg mt-0.5 shrink-0 ${
+                          msg.fallbackProvider === 'groq' ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40' : 'bg-purple-500/20 text-purple-400'
+                        }`}>
                           <Zap className="w-4 h-4" />
                         </div>
                         <div className="space-y-1 text-[11px] leading-relaxed flex-1">
-                          <div className="font-bold text-amber-300 flex items-center justify-between flex-wrap gap-1">
+                          <div className="font-bold flex items-center justify-between flex-wrap gap-1">
                             <span className="flex items-center gap-1.5">
-                              <span>مسار الاستمرارية التلقائي (Multi-Tier Resiliency Active)</span>
-                              <span className="px-1.5 py-0.2 rounded font-mono text-[9px] bg-amber-900/80 text-amber-100 border border-amber-700/60 font-semibold">
-                                {msg.fallbackTier ? `Tier ${msg.fallbackTier}` : 'Active'}
-                              </span>
+                              {msg.fallbackProvider === 'groq' ? (
+                                <span className="text-amber-300 font-extrabold flex items-center gap-1.5">
+                                  <span>GROQ T1 (Ultra-Fast Active)</span>
+                                  <span className="px-1.5 py-0.2 rounded font-mono text-[9px] bg-amber-900/90 text-amber-100 border border-amber-600 font-semibold">
+                                    Tier 1 Priority
+                                  </span>
+                                </span>
+                              ) : (
+                                <span className="text-purple-300 font-bold flex items-center gap-1.5">
+                                  <span>OpenRouter Fallback</span>
+                                  <span className="px-1.5 py-0.2 rounded font-mono text-[9px] bg-purple-900/90 text-purple-100 border border-purple-600 font-semibold">
+                                    Tier {msg.fallbackTier || 2}
+                                  </span>
+                                </span>
+                              )}
                             </span>
                             <span className="text-[10px] font-mono text-cyan-300 uppercase px-1.5 py-0.2 rounded bg-cyan-950/60 border border-cyan-800/40">
-                              {msg.fallbackProvider || 'external-provider'}
+                              {msg.modelUsed}
                             </span>
                           </div>
-                          <p className="text-slate-300">
-                            {msg.fallbackNotice || 'تم تحويل الطلب تلقائياً لتجاوز حدود الحصة أو ضغط السيرفر دون انقطاع الجلسة.'}
+                          <p className="text-slate-200 font-medium">
+                            {msg.fallbackNotice || (msg.fallbackProvider === 'groq'
+                              ? 'GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)'
+                              : 'تم تحويل الطلب تلقائياً إلى OpenRouter لتجاوز حدود الحصة وضمان استمرارية الجلسة.')}
                           </p>
-                          <div className="text-[10px] text-emerald-400/90 font-medium flex items-center gap-2 flex-wrap">
+                          <div className="text-[10px] text-emerald-400 font-medium flex items-center gap-2 flex-wrap">
                             <span>✓ تم الحفاظ على سياق المحاضرات والملفات والأسلوب الأكاديمي بنسبة 100%.</span>
-                            <span className="text-slate-400 font-mono text-[9px]">({msg.modelUsed})</span>
                           </div>
                         </div>
                       </div>
