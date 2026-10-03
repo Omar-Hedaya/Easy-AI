@@ -57,6 +57,7 @@ export interface DirectApiResult<T = string> {
 
 export const GROQ_DEFAULT_MODELS = [
   'llama-3.3-70b-versatile',
+  'openai/gpt-oss-120b',
   'llama-3.1-8b-instant',
 ];
 
@@ -210,6 +211,40 @@ export function convertMessagesToOpenAIFormat(
     }
 
     // Role is user
+    if (preferTextOnly) {
+      // 1. Text Extraction for Groq (Multimodal to Text)
+      // Groq models accept text-only payloads. If a user uploads a PDF, document, or code file,
+      // extract and convert the file content into plain text inside the user prompt rather than sending raw media.
+      let attachedDocsText = '';
+      if (msg.attachments && msg.attachments.length > 0) {
+        for (const file of msg.attachments) {
+          let extractedText = '';
+          if (file.textContent && file.textContent.trim()) {
+            extractedText = file.textContent.trim();
+          } else if (file.fileCategory === 'image') {
+            extractedText = `(Image file: "${file.name}" - ${file.type || 'image'})`;
+          } else {
+            extractedText = `(Document file: "${file.name}" - ${file.type || file.extension || 'file'})`;
+          }
+          attachedDocsText += `[Attached Document Content (${file.name}):\n${extractedText}]\n\n`;
+        }
+      }
+
+      let userPrompt = '';
+      if (attachedDocsText) {
+        userPrompt = `${attachedDocsText}User Question: ${msg.content || 'Please review, analyze, and synthesize the attached document content thoroughly.'}`;
+      } else {
+        userPrompt = msg.content || ' ';
+      }
+
+      formattedMessages.push({
+        role: 'user',
+        content: userPrompt,
+      });
+      continue;
+    }
+
+    // Role is user (Standard / OpenRouter multimodal format)
     const textAttachments = msg.attachments?.filter((a) => a.fileCategory !== 'image') || [];
     const imageAttachments = msg.attachments?.filter((a) => a.fileCategory === 'image') || [];
 
@@ -221,41 +256,28 @@ export function convertMessagesToOpenAIFormat(
     }
 
     if (imageAttachments.length > 0) {
-      if (preferTextOnly) {
-        for (const img of imageAttachments) {
-          combinedText += `\n\n[Attached Image Reference: "${img.name}" (${img.mimeType || 'image'})]`;
-          if (img.textContent) {
-            combinedText += `\nExtracted Text: ${img.textContent}`;
-          }
-        }
-        formattedMessages.push({
-          role: 'user',
-          content: combinedText || ' ',
-        });
-      } else {
-        const parts: any[] = [];
-        if (combinedText.trim()) {
-          parts.push({ type: 'text', text: combinedText });
-        }
-        for (const img of imageAttachments) {
-          let dataUrl = '';
-          if (img.base64Data) {
-            dataUrl = img.base64Data.startsWith('data:')
-              ? img.base64Data
-              : `data:${img.mimeType || 'image/png'};base64,${img.base64Data}`;
-          }
-          if (dataUrl) {
-            parts.push({
-              type: 'image_url',
-              image_url: { url: dataUrl },
-            });
-          }
-        }
-        formattedMessages.push({
-          role: 'user',
-          content: parts.length > 0 ? parts : combinedText || ' ',
-        });
+      const parts: any[] = [];
+      if (combinedText.trim()) {
+        parts.push({ type: 'text', text: combinedText });
       }
+      for (const img of imageAttachments) {
+        let dataUrl = '';
+        if (img.base64Data) {
+          dataUrl = img.base64Data.startsWith('data:')
+            ? img.base64Data
+            : `data:${img.mimeType || 'image/png'};base64,${img.base64Data}`;
+        }
+        if (dataUrl) {
+          parts.push({
+            type: 'image_url',
+            image_url: { url: dataUrl },
+          });
+        }
+      }
+      formattedMessages.push({
+        role: 'user',
+        content: parts.length > 0 ? parts : combinedText || ' ',
+      });
     } else {
       formattedMessages.push({
         role: 'user',
@@ -273,7 +295,7 @@ export const convertMessagesToOpenRouterFormat = convertMessagesToOpenAIFormat;
 /**
  * Tier 1 Failover: Executes chat completion request via Groq Cloud API.
  * Endpoint: https://api.groq.com/openai/v1/chat/completions
- * Models: llama-3.3-70b-versatile, llama-3.1-8b-instant
+ * Models: llama-3.3-70b-versatile, openai/gpt-oss-120b, llama-3.1-8b-instant
  */
 export async function callGroqApi(params: {
   messages: any[];
@@ -283,7 +305,7 @@ export async function callGroqApi(params: {
 }): Promise<{ content: string; modelUsed: string }> {
   const apiKey = getGroqApiKey(params.groqKey);
   if (!apiKey) {
-    throw new Error('Groq API Key is not configured (check VITE_GROQ_API_KEY or Settings).');
+    throw new Error('Groq API Key is not configured (check VITE_GROQ_API_KEY or localStorage "groq_api_key").');
   }
 
   const modelsToTry = params.model
@@ -293,8 +315,33 @@ export async function callGroqApi(params: {
   const endpoint = 'https://api.groq.com/openai/v1/chat/completions';
   let lastError: any = null;
 
+  // Guarantee all message payloads are strictly text strings for Groq compatibility
+  const sanitizedMessages = params.messages.map((m: any) => {
+    let cleanContent = '';
+    if (typeof m.content === 'string') {
+      cleanContent = m.content;
+    } else if (Array.isArray(m.content)) {
+      cleanContent = m.content
+        .map((p: any) => {
+          if (typeof p === 'string') return p;
+          if (p?.type === 'text') return p.text;
+          if (p?.type === 'image_url') return '[Attached Image]';
+          return '';
+        })
+        .filter(Boolean)
+        .join('\n');
+    } else {
+      cleanContent = String(m.content || ' ');
+    }
+    return {
+      role: m.role || 'user',
+      content: cleanContent || ' ',
+    };
+  });
+
   for (const modelCandidate of modelsToTry) {
     try {
+      console.log(`[Groq API] Attempting chat completion with model "${modelCandidate}" at ${endpoint}...`);
       const headers: Record<string, string> = {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${apiKey}`,
@@ -302,7 +349,7 @@ export async function callGroqApi(params: {
 
       const bodyPayload: any = {
         model: modelCandidate,
-        messages: params.messages,
+        messages: sanitizedMessages,
         temperature: 0.3,
         max_tokens: 8000,
       };
@@ -319,19 +366,29 @@ export async function callGroqApi(params: {
 
       if (!response.ok) {
         const errText = await response.text().catch(() => '');
-        console.warn(`[Groq API] Model ${modelCandidate} returned HTTP ${response.status}: ${errText}`);
-        lastError = new Error(`Groq (${modelCandidate}) HTTP ${response.status}: ${errText}`);
+        let detailedError = errText;
+        try {
+          const parsed = JSON.parse(errText);
+          if (parsed?.error?.message) {
+            detailedError = parsed.error.message;
+          }
+        } catch {}
+        console.error(
+          `[Groq API Error] ❌ Model "${modelCandidate}" returned HTTP ${response.status}: ${detailedError}`
+        );
+        lastError = new Error(`Groq API error on model "${modelCandidate}" (HTTP ${response.status}): ${detailedError}`);
         continue;
       }
 
       const data = await response.json();
       const content = data?.choices?.[0]?.message?.content || '';
+      console.log(`[Groq API Success] ✅ Model "${modelCandidate}" returned valid response (${content.length} chars).`);
       return {
         content,
         modelUsed: modelCandidate,
       };
     } catch (err: any) {
-      console.warn(`[Groq API] Execution error on model ${modelCandidate}:`, err);
+      console.error(`[Groq API Network/Execution Error] ❌ Error executing model "${modelCandidate}":`, err);
       lastError = err;
     }
   }
@@ -489,8 +546,10 @@ export async function executeMultiTierFailover(params: {
         notice: 'GROQ T1 (Ultra-Fast Active) - تم التحويل التلقائي بنجاح إلى Groq (Tier 1)',
       };
     } catch (groqErr: any) {
-      console.warn(
-        `[Failover Cascade] ⚠️ Groq (Tier 1) execution failed (${groqErr?.message || groqErr}). Only now cascading to Tier 2 (OpenRouter)...`
+      console.error(
+        `[Groq Failover Error] ❌ Groq (Tier 1) request failed. Outputting exact error for API key and payload verification:\n`,
+        groqErr?.message || groqErr,
+        `\nNow cascading to Tier 2 (OpenRouter)...`
       );
       failureLog.push(`Tier 1 (Groq): ${groqErr.message || groqErr}`);
     }
