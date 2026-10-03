@@ -25,7 +25,6 @@ import {
   BookOpen,
   Printer,
   Sliders,
-  PanelLeft,
   ArrowDown,
   Files,
   Trash2,
@@ -248,45 +247,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         </div>
       )}
 
-      {/* Top Workspace Status Bar */}
-      <div className="flex-shrink-0 px-4 py-2 bg-slate-900/90 border-b border-slate-800 flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
-          {onToggleSidebar && (
-            <button
-              onClick={onToggleSidebar}
-              className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Toggle chat history drawer"
-            >
-              <PanelLeft className="w-4 h-4 text-cyan-400" />
-            </button>
-          )}
-          <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="font-semibold text-slate-300">
-            Conversational Academic Workspace
-          </span>
-          <span className="hidden sm:inline text-slate-600">·</span>
-          <span className="hidden sm:inline text-slate-400">
-            Egyptian Arabic (العامية المصرية) + English Tech
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2">
-          <button
-            onClick={onOpenSettings}
-            className="flex items-center gap-1.5 font-mono text-[11px] px-2 py-0.5 rounded bg-slate-800 hover:bg-slate-700 text-cyan-300 border border-slate-700 transition-colors cursor-pointer"
-            title="Inspect 503/429 Fallback Engine & Resiliency Settings"
-          >
-            <Zap className="w-3 h-3 text-amber-400" />
-            <span className="truncate max-w-[120px]">{lastModelUsed}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Messages Feed (Controlled Scroll Container with zero window jump) */}
+      {/* Messages Feed (Starts immediately underneath top navbar to maximize vertical reading area) */}
       <div
         ref={scrollContainerRef}
         onScroll={handleScroll}
-        className="flex-1 min-h-0 overflow-y-auto p-3 sm:p-5 space-y-5 scrollbar-thin"
+        className="flex-1 min-h-0 overflow-y-auto p-2 sm:p-5 space-y-4 sm:space-y-5 scrollbar-thin"
       >
         {messages.length === 0 ? (
           /* Empty State / Welcome Screen */
@@ -395,7 +360,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           {/* 1. Quick Export PDF */}
                           <button
                             type="button"
-                            onClick={() => printMessageAsPdf(msg.content, `Easy_Response_${msg.id.slice(-4)}`, activeTheme)}
+                            onClick={() => printMessageAsPdf(msg.content, 'الخلاصة الأكاديمية', activeTheme)}
                             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-rose-300 hover:text-white bg-rose-950/50 hover:bg-rose-900/70 border border-rose-800/60 transition-colors cursor-pointer"
                             title="Quick Export PDF: Instantly downloads/prints formatted message as a PDF document"
                           >
@@ -406,7 +371,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           {/* 2. Quick Export HTML */}
                           <button
                             type="button"
-                            onClick={() => downloadMessageHtml(msg.content, `Easy_Response_${msg.id.slice(-4)}`, activeTheme)}
+                            onClick={() => downloadMessageHtml(msg.content, 'الخلاصة الأكاديمية', activeTheme)}
                             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-blue-300 hover:text-white bg-blue-950/50 hover:bg-blue-900/70 border border-blue-800/60 transition-colors cursor-pointer"
                             title="Quick Export HTML: Instantly downloads message as a standalone HTML document"
                           >
@@ -417,7 +382,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                           {/* 3. Export Studio (Modal) */}
                           <button
                             type="button"
-                            onClick={() => onOpenExportStudio(msg.content, `Easy_Response_${msg.id.slice(-4)}`)}
+                            onClick={() => onOpenExportStudio(msg.content, 'الخلاصة الأكاديمية')}
                             className="flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] font-semibold text-cyan-200 hover:text-white bg-cyan-950/60 hover:bg-cyan-900/80 border border-cyan-700/60 transition-colors cursor-pointer shadow-sm"
                             title="Export Studio: Edit file name, select theme, view live preview before saving"
                           >

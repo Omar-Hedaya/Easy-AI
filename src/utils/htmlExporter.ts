@@ -660,16 +660,9 @@ export function generateStandaloneHtml(
 
   <!-- Document Body with Zero Side Margin Waste -->
   <main class="document-wrapper">
-    <header class="doc-hero">
-      <div class="doc-meta-row">
-        <span>${escapeHtml(data.discipline)}</span>
-        <span>•</span>
-        <span>${escapeHtml(data.level)}</span>
-        <span>•</span>
-        <span>Verified Unique Formulas: ${data.masterFormulaLedger.length}</span>
-      </div>
-      <h1 class="doc-title">${escapeHtml(displayTitle)}</h1>
-    </header>
+    <h1 class="doc-title" style="margin-top:0;margin-bottom:1.5rem;font-size:2rem;font-weight:800;color:var(--header-accent);line-height:1.3;">
+      ${escapeHtml(displayTitle || 'الخلاصة الأكاديمية للمنهج')}
+    </h1>
 
     <!-- Executive Summary -->
     <section class="executive-card">
@@ -729,18 +722,6 @@ export function generateStandaloneHtml(
         ${deepContentHtml}
       </div>
     </section>
-
-    <!-- Verification Audit Ledger -->
-    <footer class="audit-box">
-      <div>
-        <strong>Formulas Ledger:</strong> 
-        Unique Formulas: ${data.uniquenessValidationLedger.totalUniqueFormulasFound} | 
-        Duplicates Prevented: ${data.uniquenessValidationLedger.duplicateFormulasPrevented}
-      </div>
-      <div>
-        Status: Verified Zero Formula Duplication
-      </div>
-    </footer>
   </main>
 
   <!-- Google Translate Element Anchor (Suppressed UI) -->

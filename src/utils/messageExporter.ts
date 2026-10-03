@@ -444,21 +444,12 @@ export function generateStyledMessageHtml(
     </div>
   </div>
 
-  <header class="doc-header">
-    <div>
-      <h1 class="doc-title">${escapeHtml(displayTitle)}</h1>
-    </div>
-    ${includeTimestamp ? `<div class="doc-meta">${dateStr}</div>` : ''}
-  </header>
-
   <main class="content-card">
+    <h1 class="doc-title" style="margin-top:0;margin-bottom:1.25rem;font-size:1.75rem;font-weight:800;color:var(--header-accent);line-height:1.3;">
+      ${escapeHtml(displayTitle || 'الخلاصة الأكاديمية')}
+    </h1>
     ${formattedBody}
   </main>
-
-  <footer class="doc-footer">
-    <div>${escapeHtml(displayTitle)}</div>
-    <div>${dateStr}</div>
-  </footer>
 
   <!-- Google Translate Element Anchor (Suppressed UI) -->
   <div id="google_translate_element" style="display:none; visibility:hidden; position:absolute; width:0; height:0; overflow:hidden;"></div>

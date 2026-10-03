@@ -30,7 +30,7 @@ export const ExportPreviewModal: React.FC<ExportPreviewModalProps> = ({
         .replace(/[^a-zA-Z0-9_\u0600-\u06FF\s-]/g, '')
         .trim()
         .replace(/\s+/g, '_');
-      setFileName(`Easy_${sanitized}`);
+      setFileName(sanitized || 'الخلاصة_الأكاديمية');
     }
   }, [data]);
 
@@ -169,26 +169,13 @@ export const ExportPreviewModal: React.FC<ExportPreviewModalProps> = ({
         >
           <div className="max-w-4xl mx-auto space-y-6">
             
-            {/* Header */}
+            {/* Header: Starts directly with main title */}
             <div className="border-b pb-4" style={{ borderColor: activeTheme.cardBorderHex }}>
-              <div
-                className="flex items-center gap-2 text-xs font-semibold mb-1"
-                style={{ color: activeTheme.headerAccentHex }}
-              >
-                <span>{data.discipline}</span>
-                <span>•</span>
-                <span>{data.level}</span>
-                <span>•</span>
-                <span className="flex items-center gap-1">
-                  <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
-                  {data.masterFormulaLedger.length} Unique Verified Formulas
-                </span>
-              </div>
               <h1
                 className="text-2xl md:text-3xl font-extrabold tracking-tight"
                 style={{ color: activeTheme.headerAccentHex }}
               >
-                {fileName.replace(/_/g, ' ') || data.title}
+                {fileName.replace(/_/g, ' ') || data.title || 'الخلاصة الأكاديمية'}
               </h1>
             </div>
 
@@ -433,20 +420,6 @@ export const ExportPreviewModal: React.FC<ExportPreviewModalProps> = ({
                   : 'Comprehensive Analytical Narrative & Applications'}
               </h2>
               <RichMathText text={data.deepCurriculumContent} />
-            </div>
-
-            {/* Audit */}
-            <div
-              className="p-3 rounded border text-xs font-mono flex items-center justify-between flex-wrap gap-2"
-              style={{
-                backgroundColor: activeTheme.codeBgHex,
-                borderColor: activeTheme.codeBorderHex,
-              }}
-            >
-              <span>
-                Anti-Repetition Audit: {data.uniquenessValidationLedger.totalUniqueFormulasFound} Unique Formulas | {data.uniquenessValidationLedger.duplicateFormulasPrevented} Duplicates Filtered
-              </span>
-              <span className="text-emerald-500 font-bold">● VERIFIED ZERO DUPLICATION</span>
             </div>
           </div>
         </div>

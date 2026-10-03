@@ -63,7 +63,7 @@ export default function App() {
     return sessions[0]?.id || 'default-session';
   });
 
-  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState<boolean>(false);
   const [isExportStudioOpen, setIsExportStudioOpen] = useState<boolean>(false);
@@ -159,6 +159,7 @@ export default function App() {
     const newSession = createNewSession('New Academic Chat');
     setSessions((prev) => [newSession, ...prev]);
     setActiveSessionIdState(newSession.id);
+    showNotification('success', 'New chat session started.');
   };
 
   const handleSelectSession = (id: string) => {
@@ -426,7 +427,7 @@ export default function App() {
   return (
     <div className="h-screen w-screen overflow-hidden bg-slate-950 text-slate-100 flex flex-col font-sans selection:bg-cyan-500 selection:text-white">
       {/* 3-Zone Header Bar (Fixed at top, flex-shrink-0) */}
-      <div className="flex-shrink-0">
+      <div className="flex-shrink-0 relative z-50 pointer-events-auto">
         <DocumentHeaderBar
           currentTheme={currentTheme}
           onSelectTheme={setCurrentTheme}
@@ -441,12 +442,14 @@ export default function App() {
           onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
           hasAnalyzedData={Boolean(activeDocument || messages.length > 0)}
           lastModelUsed={lastModelUsed}
+          isSidebarOpen={isSidebarOpen}
+          onOpenExportStudio={() => handleOpenExportStudio(messages.map((m) => m.content).join('\n\n'))}
         />
       </div>
 
       {/* Main Row: Sidebar Drawer + Chat Workspace */}
       <div className="flex-1 min-h-0 flex overflow-hidden relative">
-        {/* Collapsible Chat History Drawer */}
+        {/* Collapsible Chat History Drawer (Overlay on Mobile/Desktop with 0 Squeezing) */}
         <ChatSidebar
           sessions={sessions}
           activeSessionId={activeSessionId}
@@ -459,8 +462,8 @@ export default function App() {
           onClearAllSessions={handleClearAllSessions}
         />
 
-        {/* Central Workspace (Zero Window Jumping, Fixed Sticky Bottom Input) */}
-        <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative p-1 sm:p-3">
+        {/* Central Workspace (Zero Window Jumping, Fixed Sticky Bottom Input, 100% Mobile Width) */}
+        <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative p-0 sm:p-2 md:p-3">
           {/* Floating Notification */}
           {notification && (
             <div

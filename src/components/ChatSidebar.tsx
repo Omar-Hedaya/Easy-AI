@@ -7,11 +7,9 @@ import {
   Edit2,
   Check,
   X,
-  ChevronLeft,
-  ChevronRight,
   Clock,
-  Bot,
   AlertTriangle,
+  History,
 } from 'lucide-react';
 
 interface ChatSidebarProps {
@@ -65,47 +63,70 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
     onDeleteSession(id);
   };
 
+  const handleSelect = (id: string) => {
+    onSelectSession(id);
+    // On mobile screens, close the drawer after selection so user sees conversation immediately
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      onToggleOpen();
+    }
+  };
+
+  const handleNewChatClick = () => {
+    onNewChat();
+    if (typeof window !== 'undefined' && window.innerWidth < 1024) {
+      onToggleOpen();
+    }
+  };
+
   return (
     <>
-      {/* Mobile Backdrop */}
+      {/* Full Backdrop (Overlay) */}
       {isOpen && (
         <div
-          className="fixed inset-0 z-30 bg-black/60 backdrop-blur-xs md:hidden"
+          className="fixed inset-0 z-40 bg-black/60 backdrop-blur-xs transition-opacity animate-in fade-in duration-200"
           onClick={onToggleOpen}
+          aria-hidden="true"
         />
       )}
 
-      {/* Sidebar Drawer Container */}
+      {/* Slide-out Overlay Drawer (Positioned Right, Zero Main View Squeezing) */}
       <aside
-        className={`fixed md:static inset-y-0 left-0 z-40 flex flex-col w-72 sm:w-80 bg-slate-950 border-r border-slate-800 transition-all duration-300 ease-in-out shrink-0 select-none ${
-          isOpen ? 'translate-x-0' : '-translate-x-full md:-ml-72 md:translate-x-0'
+        className={`fixed inset-y-0 right-0 z-50 flex flex-col w-72 sm:w-80 max-w-[85vw] bg-slate-950/98 border-l border-slate-800 shadow-2xl backdrop-blur-md transition-transform duration-300 ease-in-out shrink-0 select-none ${
+          isOpen ? 'translate-x-0' : 'translate-x-full'
         }`}
+        aria-label="Chat History Drawer"
       >
-        {/* Top Header & New Chat Button */}
+        {/* Top Header & Close '✕' Button */}
         <div className="p-3.5 border-b border-slate-800 flex flex-col gap-2.5 bg-slate-950/90">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
-              <MessageSquare className="w-4 h-4 text-cyan-400" />
-              <span className="text-xs font-bold text-slate-200 uppercase tracking-wider">
-                Chat History
+              <History className="w-4 h-4 text-cyan-400" />
+              <span className="text-xs font-bold text-slate-100 uppercase tracking-wider">
+                سجل المحادثات
+              </span>
+              <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-800 text-cyan-300 font-mono">
+                {sessions.length}
               </span>
             </div>
+
+            {/* Clear '✕' Close Button */}
             <button
               onClick={onToggleOpen}
-              className="p-1 rounded-md text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
-              title="Close sidebar"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+              title="Close chat history drawer (✕)"
+              aria-label="Close drawer"
             >
-              <ChevronLeft className="w-4 h-4" />
+              <X className="w-5 h-5" />
             </button>
           </div>
 
           {/* Prominent + New Chat Button */}
           <button
-            onClick={onNewChat}
+            onClick={handleNewChatClick}
             className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-cyan-600 hover:from-blue-500 hover:to-cyan-500 text-white font-bold text-xs shadow-md shadow-blue-900/20 transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>+ New Chat Session</span>
+            <span>+ محادثة جديدة / New Chat</span>
           </button>
         </div>
 
@@ -114,8 +135,8 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
           {sessions.length === 0 ? (
             <div className="h-40 flex flex-col items-center justify-center text-center p-4 text-slate-500 text-xs">
               <MessageSquare className="w-6 h-6 mb-2 opacity-40 text-slate-400" />
-              <p>No saved conversations yet.</p>
-              <p className="text-[11px] text-slate-600">Start a new chat to begin!</p>
+              <p>لا توجد محادثات سابقة.</p>
+              <p className="text-[11px] text-slate-600">ابدأ جلسة جديدة الآن!</p>
             </div>
           ) : (
             sessions.map((session) => {
@@ -125,11 +146,11 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
               return (
                 <div
                   key={session.id}
-                  onClick={() => onSelectSession(session.id)}
+                  onClick={() => handleSelect(session.id)}
                   className={`group relative flex items-center justify-between p-2.5 rounded-xl text-xs transition-all cursor-pointer border ${
                     isActive
-                      ? 'bg-blue-950/50 border-blue-500/50 text-white shadow-sm'
-                      : 'bg-slate-900/50 border-transparent text-slate-400 hover:bg-slate-900 hover:text-slate-200 hover:border-slate-800'
+                      ? 'bg-blue-950/60 border-cyan-500/60 text-white shadow-sm'
+                      : 'bg-slate-900/40 border-transparent text-slate-400 hover:bg-slate-900 hover:text-slate-200 hover:border-slate-800'
                   }`}
                 >
                   <div className="flex items-center gap-2.5 overflow-hidden flex-1 mr-2">
@@ -214,14 +235,14 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
             <div className="p-2 rounded-lg bg-rose-950/60 border border-rose-800 text-rose-200 flex flex-col gap-1.5">
               <div className="flex items-center gap-1.5 text-[11px] font-semibold">
                 <AlertTriangle className="w-3.5 h-3.5 text-rose-400" />
-                <span>Delete all chat sessions?</span>
+                <span>مسح كل المحادثات؟</span>
               </div>
               <div className="flex items-center justify-end gap-2 mt-1">
                 <button
                   onClick={() => setShowClearConfirm(false)}
                   className="px-2 py-0.5 rounded bg-slate-800 text-slate-300 text-[10px] cursor-pointer"
                 >
-                  Cancel
+                  إلغاء
                 </button>
                 <button
                   onClick={() => {
@@ -230,7 +251,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
                   }}
                   className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold text-[10px] cursor-pointer"
                 >
-                  Confirm Clear
+                  تأكيد المسح
                 </button>
               </div>
             </div>
@@ -241,7 +262,7 @@ export const ChatSidebar: React.FC<ChatSidebarProps> = ({
               className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg text-slate-500 hover:text-rose-400 hover:bg-slate-900 transition-colors disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer text-[11px]"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              <span>Clear All Chat History</span>
+              <span>مسح كل سجل المحادثات</span>
             </button>
           )}
         </div>
