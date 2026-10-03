@@ -292,11 +292,18 @@ export function convertMessagesToOpenAIFormat(
 export const convertMessagesToOpenRouterFormat = convertMessagesToOpenAIFormat;
 
 /**
- * Tier 1 Failover: Executes chat completion request via Groq Cloud API with dynamic internal model switching.
- * Candidate models in order of capability:
+ * Tier 1 Failover: Executes chat completion request via Groq Cloud API with dynamic internal model switching
+ * and adaptive exponential backoff & smart reconnect loop.
+ *
+ * Pool of Groq models in order of capability:
  * ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'openai/gpt-oss-120b', 'qwen/qwen3.8-27b']
- * If Groq returns HTTP 429 (Rate Limit), 503 (Server High Load/Over capacity), or latency timeout,
- * it automatically rotates to the next available model in the array without aborting.
+ *
+ * Adaptive Server Load & Quota Retry Loop:
+ * - Step 1 (Immediate Model Rotation): When a model returns HTTP 429, 503, or timeout, immediately
+ *   cascades to the next candidate (switching from 70b to 8b or lighter models often succeeds instantly).
+ * - Step 2 (Exponential Backoff & Smart Reconnect): If all Groq models report capacity congestion,
+ *   triggers up to 2 rapid retry attempts with jittered backoff (1.5s then 3s) to catch momentarily freed server capacity.
+ * - Keeps user context, chat history, and extracted document text 100% intact across all attempts.
  */
 export async function callGroqApi(params: {
   messages: any[];
@@ -304,6 +311,7 @@ export async function callGroqApi(params: {
   candidateModels?: string[];
   groqKey?: string;
   responseFormatJson?: boolean;
+  onStatusUpdate?: (statusMessage: string) => void;
 }): Promise<{ content: string; modelUsed: string }> {
   const apiKey = getGroqApiKey(params.groqKey);
   if (!apiKey) {
@@ -343,91 +351,165 @@ export async function callGroqApi(params: {
     };
   });
 
-  for (let i = 0; i < modelsToTry.length; i++) {
-    const modelCandidate = modelsToTry[i];
-    const isLast = i === modelsToTry.length - 1;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-    try {
-      console.log(`[Groq API Dynamic Cascade] Attempting model [${i + 1}/${modelsToTry.length}]: "${modelCandidate}" at ${endpoint}...`);
-      
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 18000); // 18s model latency timeout
+  // Max retry passes for server capacity congestion / rate limits:
+  // Pass 0: Initial model rotation sweep (immediate model-to-model cascade)
+  // Pass 1: Smart reconnect backoff (~1.5s with jitter)
+  // Pass 2: Smart reconnect backoff (~3.0s with jitter)
+  const MAX_RETRY_PASSES = 2;
 
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`,
-      };
+  for (let pass = 0; pass <= MAX_RETRY_PASSES; pass++) {
+    if (pass > 0) {
+      // Step 2: Exponential Backoff & Smart Reconnect
+      const baseDelay = pass === 1 ? 1500 : 3000;
+      const jitter = Math.floor(Math.random() * (pass === 1 ? 250 : 400));
+      const backoffDelay = baseDelay + jitter;
 
-      const bodyPayload: any = {
-        model: modelCandidate,
-        messages: sanitizedMessages,
-        temperature: 0.3,
-        max_tokens: 8000,
-      };
+      const backoffNotice = pass === 1
+        ? `سيرفر Groq مضغوط، جاري إعادة المحاولة بمهلة ارتداد ذكية (1.5s) [محاولة 1/2]...`
+        : `خوادم Groq مشغولة، جاري المحاولة الأخيرة مع مهلة إضافية (3.0s) [محاولة 2/2]...`;
 
-      if (params.responseFormatJson) {
-        bodyPayload.response_format = { type: 'json_object' };
-      }
+      console.warn(`[Groq Adaptive Backoff] ⏳ ${backoffNotice} Waiting ${backoffDelay}ms before retry pass ${pass}...`);
+      params.onStatusUpdate?.(backoffNotice);
+      await sleep(backoffDelay);
+    }
 
-      let response: Response;
+    // In retry passes, prioritize lighter, high-throughput models first (8b has distinct, looser rate limits)
+    const passModels = pass === 0
+      ? modelsToTry
+      : [
+          'llama-3.1-8b-instant',
+          'llama-3.3-70b-versatile',
+          ...modelsToTry.filter((m) => m !== 'llama-3.1-8b-instant' && m !== 'llama-3.3-70b-versatile'),
+        ];
+
+    let hadCapacityErrorInPass = false;
+
+    for (let i = 0; i < passModels.length; i++) {
+      const modelCandidate = passModels[i];
+      const nextCandidate = passModels[i + 1];
+
       try {
-        response = await fetch(endpoint, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify(bodyPayload),
-          signal: controller.signal,
-        });
-      } finally {
-        clearTimeout(timeoutId);
-      }
-
-      if (!response.ok) {
-        const errText = await response.text().catch(() => '');
-        let detailedError = errText;
-        try {
-          const parsed = JSON.parse(errText);
-          if (parsed?.error?.message) {
-            detailedError = parsed.error.message;
-          }
-        } catch {}
-
-        console.error(
-          `[Groq API Error] ❌ Model "${modelCandidate}" returned HTTP ${response.status}: ${detailedError}`
+        console.log(
+          `[Groq API Dynamic Cascade] [Pass ${pass}/${MAX_RETRY_PASSES}] Attempting model [${i + 1}/${passModels.length}]: "${modelCandidate}" at ${endpoint}...`
         );
-        lastError = new Error(`Groq API error on model "${modelCandidate}" (HTTP ${response.status}): ${detailedError}`);
 
-        if (!isLast) {
-          console.warn(
-            `[Groq Dynamic Switching] 🔄 Model "${modelCandidate}" encountered HTTP ${response.status}. Automatically cascading to next Groq candidate: "${modelsToTry[i + 1]}"...`
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 18000); // 18s model latency timeout
+
+        const headers: Record<string, string> = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        };
+
+        const bodyPayload: any = {
+          model: modelCandidate,
+          messages: sanitizedMessages,
+          temperature: 0.3,
+          max_tokens: 8000,
+        };
+
+        if (params.responseFormatJson) {
+          bodyPayload.response_format = { type: 'json_object' };
+        }
+
+        let response: Response;
+        try {
+          response = await fetch(endpoint, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(bodyPayload),
+            signal: controller.signal,
+          });
+        } finally {
+          clearTimeout(timeoutId);
+        }
+
+        if (!response.ok) {
+          const errText = await response.text().catch(() => '');
+          let detailedError = errText;
+          try {
+            const parsed = JSON.parse(errText);
+            if (parsed?.error?.message) {
+              detailedError = parsed.error.message;
+            }
+          } catch {}
+
+          console.error(
+            `[Groq API Error] ❌ Model "${modelCandidate}" returned HTTP ${response.status}: ${detailedError}`
           );
+          lastError = new Error(`Groq API error on model "${modelCandidate}" (HTTP ${response.status}): ${detailedError}`);
+
+          // Check if fatal non-retryable error (e.g. invalid API key 401)
+          const isInvalidKey =
+            response.status === 401 ||
+            detailedError.toLowerCase().includes('invalid api key') ||
+            detailedError.toLowerCase().includes('unauthorized');
+
+          if (isInvalidKey) {
+            console.error('[Groq API Fatal] ❌ Invalid Groq API Key detected. Bypassing further Groq retries to prevent latency.');
+            throw lastError; // Escalate immediately to Tier 2
+          }
+
+          const isCapacityOrQuota =
+            response.status === 429 ||
+            response.status === 503 ||
+            response.status === 502 ||
+            response.status === 504 ||
+            isRateLimitOrQuotaError(response.status, detailedError);
+
+          if (isCapacityOrQuota) {
+            hadCapacityErrorInPass = true;
+          }
+
+          if (nextCandidate) {
+            // Step 1: Immediate Model Rotation
+            const rotationMsg = `سيرفر Groq مضغوط على (${modelCandidate})، جاري فحص نموذج بديل أقل ضغطاً (${nextCandidate})...`;
+            console.warn(`[Groq Dynamic Rotation] 🔄 ${rotationMsg}`);
+            params.onStatusUpdate?.(rotationMsg);
+            continue;
+          }
+
           continue;
         }
-        continue;
-      }
 
-      const data = await response.json();
-      const content = data?.choices?.[0]?.message?.content || '';
-      console.log(`[Groq API Success] ✅ Model "${modelCandidate}" returned valid response (${content.length} chars).`);
-      return {
-        content,
-        modelUsed: modelCandidate,
-      };
-    } catch (err: any) {
-      const isTimeout = err?.name === 'AbortError' || err?.message?.includes('timeout') || err?.message?.includes('aborted');
-      const reason = isTimeout ? 'Latency timeout (18s)' : (err?.message || err);
-      console.error(`[Groq API Execution Error] ❌ Model "${modelCandidate}" failed: ${reason}`);
-      lastError = err;
+        const data = await response.json();
+        const content = data?.choices?.[0]?.message?.content || '';
+        console.log(`[Groq API Success] ✅ Model "${modelCandidate}" returned valid response (${content.length} chars).`);
+        params.onStatusUpdate?.(`تم الاتصال بنجاح عبر Groq (${modelCandidate})`);
+        return {
+          content,
+          modelUsed: modelCandidate,
+        };
+      } catch (err: any) {
+        if (err?.message?.includes('Invalid Groq API Key') || err?.message?.includes('(HTTP 401)')) {
+          throw err;
+        }
 
-      if (!isLast) {
-        console.warn(
-          `[Groq Dynamic Switching] 🔄 Model "${modelCandidate}" failed (${reason}). Automatically rotating to next Groq candidate: "${modelsToTry[i + 1]}"...`
-        );
-        continue;
+        const isTimeout =
+          err?.name === 'AbortError' || err?.message?.includes('timeout') || err?.message?.includes('aborted');
+        const reason = isTimeout ? 'Latency timeout (18s)' : (err?.message || err);
+        console.error(`[Groq API Execution Error] ❌ Model "${modelCandidate}" failed: ${reason}`);
+        lastError = err;
+        hadCapacityErrorInPass = true;
+
+        if (nextCandidate) {
+          const rotationMsg = `سيرفر Groq مضغوط، جاري فحص نموذج بديل أقل ضغطاً (${nextCandidate})...`;
+          console.warn(`[Groq Dynamic Rotation] 🔄 ${rotationMsg}`);
+          params.onStatusUpdate?.(rotationMsg);
+          continue;
+        }
       }
+    }
+
+    // If no transient capacity errors occurred (e.g. client validation error), don't perform backoff retries
+    if (!hadCapacityErrorInPass) {
+      break;
     }
   }
 
-  throw lastError || new Error('All Groq candidate models failed to produce a response.');
+  throw lastError || new Error('All Groq candidate models and adaptive backoff retry attempts failed.');
 }
 
 /**
@@ -609,9 +691,14 @@ export async function executeMultiTierFailover(params: {
         messages: groqMessages,
         groqKey: groqApiKey,
         responseFormatJson,
+        onStatusUpdate: (statusMsg) => {
+          onFailoverStatus?.(1, 'groq', statusMsg);
+        },
       });
 
       console.log(`[Failover Cascade] ✅ GROQ Tier 1 Succeeded! Model used: ${res.modelUsed}`);
+      onFailoverStatus?.(1, 'groq', `✓ تم الاتصال بنجاح عبر Groq (${res.modelUsed})`);
+
       return {
         content: res.content,
         provider: 'groq',
@@ -621,11 +708,16 @@ export async function executeMultiTierFailover(params: {
       };
     } catch (groqErr: any) {
       console.error(
-        `[Groq Failover Error] ❌ Groq (Tier 1) request failed. Outputting exact error for API key and payload verification:\n`,
+        `[Groq Failover Error] ❌ Groq (Tier 1) request failed after exhausting model rotation and backoff retries:\n`,
         groqErr?.message || groqErr,
-        `\nNow cascading to Tier 2 (OpenRouter)...`
+        `\nNow escalating strictly to Tier 2 (OpenRouter)...`
       );
       failureLog.push(`Tier 1 (Groq): ${groqErr.message || groqErr}`);
+      onFailoverStatus?.(
+        2,
+        'openrouter',
+        '⚡ تعذر استجابة Groq بعد استنفاد النماذج والمحاولات، جاري المتابعة عبر OpenRouter (Tier 2)...'
+      );
     }
   }
 

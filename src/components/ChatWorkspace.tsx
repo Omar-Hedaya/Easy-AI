@@ -34,7 +34,109 @@ import {
   AlertTriangle,
   Globe,
   Atom,
+  RotateCcw,
 } from 'lucide-react';
+
+// Auto-Save Draft Storage Helpers
+const DRAFT_STORAGE_PREFIX = 'easy_ai_chat_draft_';
+const LAST_DRAFT_KEY = 'easy_ai_chat_draft_last';
+
+interface AutoSavedDraft {
+  text: string;
+  savedAt: number;
+  sessionId?: string;
+}
+
+const getDraftKey = (sessionId?: string) => `${DRAFT_STORAGE_PREFIX}${sessionId || 'global'}`;
+
+const loadDraftFromStorage = (sessionId?: string): AutoSavedDraft | null => {
+  try {
+    const key = getDraftKey(sessionId);
+    const raw = localStorage.getItem(key);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (typeof parsed === 'string' && parsed.trim()) {
+          return { text: parsed, savedAt: Date.now(), sessionId };
+        }
+        if (parsed && typeof parsed.text === 'string' && parsed.text.trim()) {
+          return parsed;
+        }
+      } catch {
+        if (raw.trim()) {
+          return { text: raw, savedAt: Date.now(), sessionId };
+        }
+      }
+    }
+    // Fallback to LAST_DRAFT_KEY if relevant
+    const rawLast = localStorage.getItem(LAST_DRAFT_KEY);
+    if (rawLast) {
+      try {
+        const parsedLast = JSON.parse(rawLast);
+        if (parsedLast && typeof parsedLast.text === 'string' && parsedLast.text.trim()) {
+          if (!sessionId || !parsedLast.sessionId || parsedLast.sessionId === sessionId) {
+            return parsedLast;
+          }
+        }
+      } catch {
+        // ignore
+      }
+    }
+  } catch (err) {
+    console.warn('[AutoSaveDraft] Failed to load draft:', err);
+  }
+  return null;
+};
+
+const saveDraftToStorage = (text: string, sessionId?: string) => {
+  try {
+    const key = getDraftKey(sessionId);
+    if (!text.trim()) {
+      localStorage.removeItem(key);
+      const rawLast = localStorage.getItem(LAST_DRAFT_KEY);
+      if (rawLast) {
+        try {
+          const parsed = JSON.parse(rawLast);
+          if (!sessionId || parsed.sessionId === sessionId) {
+            localStorage.removeItem(LAST_DRAFT_KEY);
+          }
+        } catch {
+          localStorage.removeItem(LAST_DRAFT_KEY);
+        }
+      }
+      return;
+    }
+    const draftData: AutoSavedDraft = {
+      text,
+      savedAt: Date.now(),
+      sessionId,
+    };
+    const serialized = JSON.stringify(draftData);
+    localStorage.setItem(key, serialized);
+    localStorage.setItem(LAST_DRAFT_KEY, serialized);
+  } catch (err) {
+    console.warn('[AutoSaveDraft] Failed to save draft:', err);
+  }
+};
+
+const clearDraftFromStorage = (sessionId?: string) => {
+  try {
+    localStorage.removeItem(getDraftKey(sessionId));
+    const rawLast = localStorage.getItem(LAST_DRAFT_KEY);
+    if (rawLast) {
+      try {
+        const parsed = JSON.parse(rawLast);
+        if (!sessionId || parsed.sessionId === sessionId) {
+          localStorage.removeItem(LAST_DRAFT_KEY);
+        }
+      } catch {
+        localStorage.removeItem(LAST_DRAFT_KEY);
+      }
+    }
+  } catch (err) {
+    console.warn('[AutoSaveDraft] Failed to clear draft:', err);
+  }
+};
 
 interface ChatWorkspaceProps {
   messages: ChatMessage[];
@@ -48,6 +150,8 @@ interface ChatWorkspaceProps {
   onOpenSettings: () => void;
   isSidebarOpen?: boolean;
   onToggleSidebar?: () => void;
+  activeSessionId?: string;
+  liveFailoverStatus?: string | null;
 }
 
 export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
@@ -62,8 +166,28 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   onOpenSettings,
   isSidebarOpen = false,
   onToggleSidebar,
+  activeSessionId,
+  liveFailoverStatus,
 }) => {
-  const [inputPrompt, setInputPrompt] = useState('');
+  // Initialize input prompt and draft restored notice from localStorage
+  const initialDraft = useRef<AutoSavedDraft | null>(null);
+  if (initialDraft.current === null) {
+    initialDraft.current = loadDraftFromStorage(activeSessionId);
+  }
+
+  const [inputPrompt, setInputPrompt] = useState<string>(() => initialDraft.current?.text || '');
+  const [draftRestoredNotice, setDraftRestoredNotice] = useState<{ savedAt: number } | null>(() => {
+    return initialDraft.current?.text ? { savedAt: initialDraft.current.savedAt } : null;
+  });
+  const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>(() => {
+    return initialDraft.current?.text ? 'saved' : 'idle';
+  });
+
+  const inputPromptRef = useRef(inputPrompt);
+  const activeSessionIdRef = useRef(activeSessionId);
+  const saveTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastSavedTextRef = useRef<string>(inputPrompt);
+
   const [attachments, setAttachments] = useState<ProcessedFile[]>([]);
   const [requestSynthesis, setRequestSynthesis] = useState(false);
   const [enableSearchGrounding, setEnableSearchGrounding] = useState(true);
@@ -78,6 +202,124 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isProcessingFiles, setIsProcessingFiles] = useState(false);
   const [processingStatus, setProcessingStatus] = useState<string | null>(null);
+
+  // Keep references updated
+  useEffect(() => {
+    inputPromptRef.current = inputPrompt;
+  }, [inputPrompt]);
+
+  useEffect(() => {
+    activeSessionIdRef.current = activeSessionId;
+  }, [activeSessionId]);
+
+  // Adjust textarea height on change
+  const adjustTextareaHeight = () => {
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 160)}px`;
+    }
+  };
+
+  useEffect(() => {
+    adjustTextareaHeight();
+  }, [inputPrompt]);
+
+  // Debounced auto-save while composing
+  useEffect(() => {
+    if (saveTimerRef.current) {
+      clearTimeout(saveTimerRef.current);
+    }
+
+    if (inputPrompt === lastSavedTextRef.current) {
+      return;
+    }
+
+    if (!inputPrompt.trim()) {
+      clearDraftFromStorage(activeSessionIdRef.current);
+      lastSavedTextRef.current = '';
+      setSaveStatus('idle');
+      return;
+    }
+
+    setSaveStatus('saving');
+    saveTimerRef.current = setTimeout(() => {
+      saveDraftToStorage(inputPrompt, activeSessionIdRef.current);
+      lastSavedTextRef.current = inputPrompt;
+      setSaveStatus('saved');
+    }, 400);
+
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+      }
+    };
+  }, [inputPrompt]);
+
+  // Immediate synchronous save on navigate away or page refresh/close/tab hide
+  useEffect(() => {
+    const handleImmediateSave = () => {
+      const text = inputPromptRef.current;
+      if (text.trim()) {
+        saveDraftToStorage(text, activeSessionIdRef.current);
+      }
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        handleImmediateSave();
+      }
+    };
+
+    window.addEventListener('beforeunload', handleImmediateSave);
+    window.addEventListener('pagehide', handleImmediateSave);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener('beforeunload', handleImmediateSave);
+      window.removeEventListener('pagehide', handleImmediateSave);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  // Handle switching active sessions smoothly while maintaining separate drafts
+  const prevSessionIdRef = useRef(activeSessionId);
+  useEffect(() => {
+    if (prevSessionIdRef.current !== activeSessionId) {
+      // 1. Immediately save previous session draft if it has text
+      if (inputPromptRef.current.trim()) {
+        saveDraftToStorage(inputPromptRef.current, prevSessionIdRef.current);
+      }
+
+      // 2. Load draft for newly activated session
+      const loaded = loadDraftFromStorage(activeSessionId);
+      const newText = loaded?.text || '';
+      setInputPrompt(newText);
+      inputPromptRef.current = newText;
+      lastSavedTextRef.current = newText;
+
+      if (newText) {
+        setDraftRestoredNotice({ savedAt: loaded?.savedAt || Date.now() });
+        setSaveStatus('saved');
+      } else {
+        setDraftRestoredNotice(null);
+        setSaveStatus('idle');
+      }
+
+      prevSessionIdRef.current = activeSessionId;
+    }
+  }, [activeSessionId]);
+
+  const handleDiscardDraft = () => {
+    setInputPrompt('');
+    inputPromptRef.current = '';
+    lastSavedTextRef.current = '';
+    clearDraftFromStorage(activeSessionIdRef.current);
+    setDraftRestoredNotice(null);
+    setSaveStatus('idle');
+    if (textareaRef.current) {
+      textareaRef.current.style.height = 'auto';
+    }
+  };
 
   // User-scroll detection to prevent auto-scrolling to top or abrupt jumps
   const handleScroll = () => {
@@ -168,6 +410,13 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
     if ((!inputPrompt.trim() && attachments.length === 0) || isLoading) return;
 
     onSendMessage(inputPrompt, attachments, requestSynthesis, enableSearchGrounding);
+
+    // Clear auto-saved draft immediately on send
+    clearDraftFromStorage(activeSessionIdRef.current);
+    lastSavedTextRef.current = '';
+    setDraftRestoredNotice(null);
+    setSaveStatus('idle');
+
     setInputPrompt('');
     setAttachments([]);
     if (textareaRef.current) {
@@ -572,15 +821,24 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
           })
         )}
 
-        {/* Loading Indicator */}
+        {/* Loading Indicator with Live Failover & Model Recovery Status */}
         {isLoading && (
-          <div className="flex gap-2.5 mr-auto max-w-4xl items-center">
+          <div className="flex gap-2.5 mr-auto max-w-4xl items-center animate-in fade-in duration-200">
             <div className="w-8 h-8 rounded-xl bg-blue-600/20 border border-blue-500/30 flex items-center justify-center text-cyan-400 shrink-0">
               <Bot className="w-4 h-4" />
             </div>
-            <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 text-xs text-slate-300 flex items-center gap-2.5">
-              <RefreshCw className="w-4 h-4 animate-spin text-cyan-400" />
-              <span>Easy AI is reasoning and computing exact formulas...</span>
+            <div className="p-3 rounded-2xl bg-slate-900 border border-slate-800 text-xs text-slate-300 flex items-center gap-2.5 shadow-lg">
+              <RefreshCw className="w-4 h-4 animate-spin text-cyan-400 shrink-0" />
+              {liveFailoverStatus ? (
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold text-amber-300 flex items-center gap-1.5">
+                    <Zap className="w-3.5 h-3.5 text-amber-400 animate-pulse shrink-0" />
+                    <span>{liveFailoverStatus}</span>
+                  </span>
+                </div>
+              ) : (
+                <span>Easy AI is reasoning and computing exact formulas...</span>
+              )}
             </div>
           </div>
         )}
@@ -718,6 +976,41 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
               </div>
             )}
 
+            {/* Auto-Saved Draft Restored Notice Banner */}
+            {draftRestoredNotice && inputPrompt.trim() && (
+              <div className="flex items-center justify-between px-2.5 py-1.5 mb-1.5 rounded-lg bg-cyan-950/70 border border-cyan-800/60 text-[11px] text-cyan-200 select-none animate-in fade-in duration-200">
+                <div className="flex items-center gap-1.5">
+                  <RotateCcw className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                  <span>
+                    <strong>تم استعادة المسودة تلقائياً:</strong> تم استرجاع نصك غير المرسل من جلستك السابقة
+                    {draftRestoredNotice.savedAt && (
+                      <span className="text-cyan-400/80 mr-1 font-mono text-[10px]">
+                        ({new Date(draftRestoredNotice.savedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})
+                      </span>
+                    )}
+                  </span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={handleDiscardDraft}
+                    className="px-2 py-0.5 rounded text-[10px] font-semibold text-rose-300 hover:text-rose-100 bg-rose-950/80 hover:bg-rose-900 border border-rose-800/60 transition-colors cursor-pointer"
+                    title="مسح هذه المسودة والبدء من جديد"
+                  >
+                    مسح المسودة
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDraftRestoredNotice(null)}
+                    className="text-slate-400 hover:text-slate-200 p-0.5"
+                    title="إغلاق الإشعار"
+                  >
+                    <X className="w-3 h-3" />
+                  </button>
+                </div>
+              </div>
+            )}
+
             <textarea
               ref={textareaRef}
               rows={2}
@@ -806,8 +1099,25 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                 </button>
               </div>
 
-              {/* Send Button */}
+              {/* Send Button and Draft Indicator */}
               <div className="flex items-center gap-2">
+                {/* Live Auto-save draft status indicator */}
+                {inputPrompt.trim() && (
+                  <div className="flex items-center gap-1 text-[10px] font-mono select-none px-2 py-0.5 rounded bg-slate-800/70 border border-slate-700/60">
+                    {saveStatus === 'saving' ? (
+                      <span className="flex items-center gap-1 text-cyan-400">
+                        <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                        <span className="hidden sm:inline">جاري الحفظ...</span>
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 text-emerald-400" title="المسودة محفوظة تلقائياً في المتصفح">
+                        <Check className="w-3 h-3 text-emerald-400" />
+                        <span className="hidden sm:inline">مسودة محفوظة</span>
+                      </span>
+                    )}
+                  </div>
+                )}
+
                 <span className="hidden lg:inline text-[11px] text-slate-500 font-mono">
                   Shift+Enter for newline
                 </span>

@@ -65,6 +65,7 @@ export default function App() {
 
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
+  const [liveFailoverStatus, setLiveFailoverStatus] = useState<string | null>(null);
   const [isPreviewModalOpen, setIsPreviewModalOpen] = useState<boolean>(false);
   const [isExportStudioOpen, setIsExportStudioOpen] = useState<boolean>(false);
   const [exportStudioContent, setExportStudioContent] = useState<string>('');
@@ -321,6 +322,7 @@ export default function App() {
           groqKey: externalKeys.groqKey,
           openRouterKey: externalKeys.openRouterKey,
           onFailoverStatus: (tier, provider, message) => {
+            setLiveFailoverStatus(message);
             showNotification('warning', message);
           },
         });
@@ -405,6 +407,7 @@ export default function App() {
           groqKey: externalKeys.groqKey,
           openRouterKey: externalKeys.openRouterKey,
           onFailoverStatus: (tier, provider, message) => {
+            setLiveFailoverStatus(message);
             showNotification('warning', message);
           },
         });
@@ -486,6 +489,7 @@ export default function App() {
       );
     } finally {
       setIsLoading(false);
+      setLiveFailoverStatus(null);
     }
   };
 
@@ -588,6 +592,8 @@ export default function App() {
             onOpenSettings={() => setIsSettingsOpen(true)}
             isSidebarOpen={isSidebarOpen}
             onToggleSidebar={() => setIsSidebarOpen(!isSidebarOpen)}
+            activeSessionId={activeSessionId}
+            liveFailoverStatus={liveFailoverStatus}
           />
         </div>
       </div>
