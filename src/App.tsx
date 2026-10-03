@@ -19,6 +19,7 @@ import {
   getActiveSessionId,
   setActiveSessionId,
 } from './utils/sessionStorage';
+import { sendDirectChatMessage, analyzeDirectCurriculum } from './utils/geminiService';
 import { AlertCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
 
 export default function App() {
@@ -69,7 +70,7 @@ export default function App() {
   const [exportStudioContent, setExportStudioContent] = useState<string>('');
   const [exportStudioTitle, setExportStudioTitle] = useState<string>('Easy_Academic_Notes');
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
-  const [lastModelUsed, setLastModelUsed] = useState<string>('gemini-3.8-flash');
+  const [lastModelUsed, setLastModelUsed] = useState<string>(() => selectedModel);
   const [externalKeys, setExternalKeys] = useState<ExternalKeysConfig>(() => {
     try {
       const stored = localStorage.getItem('easy_external_keys');
@@ -82,6 +83,7 @@ export default function App() {
 
   const handleSelectModel = (modelId: string) => {
     setSelectedModel(modelId);
+    setLastModelUsed(modelId); // Sync immediately with chat workspace badge
     try {
       localStorage.setItem('easy_selected_model', modelId);
     } catch (e) {
@@ -228,6 +230,13 @@ export default function App() {
       )
     );
 
+    // Requirement 3: Read API key strictly via import.meta.env.VITE_GEMINI_API_KEY
+    const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+    if (!apiKey || typeof apiKey !== 'string' || apiKey.trim() === '' || apiKey === 'MY_GEMINI_API_KEY') {
+      alert('API Key is missing in environment variables');
+      return;
+    }
+
     setIsLoading(true);
 
     try {
@@ -271,41 +280,23 @@ export default function App() {
           ? `Cross-Document Synthesis (${pdfFiles.length} Lecture PDFs)`
           : prompt.slice(0, 80) || attachments[0]?.name || 'Academic Curriculum Synthesis';
 
-        const res = await fetch('/api/curriculum/analyze', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
+        // Requirement 1 & 4: Direct Google Gemini API Call with Multimodal/PDF inputs
+        const { result: docResult, modelUsed, switchedDueTo404, switchedFrom } =
+          await analyzeDirectCurriculum({
             title: synthesisTitle,
             discipline: 'Academic Science & Engineering',
             targetLanguage: currentLanguage,
             level: 'Undergraduate / Professional',
             focus: 'Strict Anti-Repetition & Mathematical Precision',
             rawContent,
-            externalKeys,
-            preferredModel: selectedModel,
-            attachments: pdfFiles.map((a) => ({
-              name: a.name,
-              type: a.type,
-              size: a.size,
-              textContent: a.textContent,
-              base64Data: a.base64Data,
-              mimeType: a.mimeType,
-            })),
-          }),
-        });
+            model: selectedModel,
+            attachments: pdfFiles,
+          });
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Synthesis failed (HTTP ${res.status})`);
-        }
-
-        const docResult: CurriculumAnalysisResult = await res.json();
-        const modelUsed = (docResult as any)._modelUsed || selectedModel;
-        const switchedDueTo404 = Boolean((docResult as any)._switchedDueTo404);
-        const switchedFrom = (docResult as any)._switchedFrom;
         setLastModelUsed(modelUsed);
 
         if (switchedDueTo404) {
+          setSelectedModel(modelUsed);
           showNotification(
             'warning',
             `⚠️ Model ${switchedFrom || selectedModel} returned 404 (Not Found). Automatically switched to ${modelUsed} with all PDF attachments preserved.`
@@ -345,41 +336,18 @@ export default function App() {
           )
         );
       } else {
-        // Conversational query with multimodal and untruncated context
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            messages: updatedMessages.map((m) => ({
-              role: m.role,
-              content: m.content,
-              attachments: m.attachments?.map((a) => ({
-                name: a.name,
-                type: a.type,
-                size: a.size,
-                textContent: a.textContent,
-                base64Data: a.base64Data,
-                mimeType: a.mimeType,
-              })),
-            })),
+        // Requirement 1 & 2: Direct Google Gemini API conversational inference with model sync and 404 retry
+        const { result: replyText, modelUsed, switchedDueTo404, switchedFrom } =
+          await sendDirectChatMessage({
+            messages: updatedMessages,
+            model: selectedModel,
             targetLanguage: currentLanguage,
-            externalKeys,
-            preferredModel: selectedModel,
-          }),
-        });
+          });
 
-        if (!res.ok) {
-          const errData = await res.json().catch(() => ({}));
-          throw new Error(errData.error || `Chat inference failed (HTTP ${res.status})`);
-        }
-
-        const data = await res.json();
-        const modelUsed = data.modelUsed || selectedModel;
-        const switchedDueTo404 = Boolean(data.switchedDueTo404);
-        const switchedFrom = data.switchedFrom;
         setLastModelUsed(modelUsed);
 
         if (switchedDueTo404) {
+          setSelectedModel(modelUsed);
           showNotification(
             'warning',
             `⚠️ Model ${switchedFrom || selectedModel} returned 404 (Not Found). Automatically switched to ${modelUsed} with full PDF context preserved.`
@@ -389,7 +357,7 @@ export default function App() {
         const aiMessage: ChatMessage = {
           id: `model-${Date.now()}`,
           role: 'model',
-          content: data.reply,
+          content: replyText,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           modelUsed,
           switchedDueTo404,
@@ -416,7 +384,7 @@ export default function App() {
       const errorMessage: ChatMessage = {
         id: `model-${Date.now()}`,
         role: 'model',
-        content: `حصلت مشكلة أثناء المعالجة: "${err.message}". تم فحص مسار الـ Fallback التلقائي. برجاء المحاولة مجدداً أو مراجعة مفاتيح الـ Fallback الخارجية في الإعدادات.`,
+        content: `حصلت مشكلة أثناء المعالجة: "${err.message}". تم فحص مسار الـ Fallback التلقائي. برجاء المحاولة مجدداً أو التأكد من توفر مفتاح Gemini API في متغيرات البيئة.`,
         timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       };
 
