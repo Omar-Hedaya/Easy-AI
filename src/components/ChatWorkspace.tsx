@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types/chat';
-import { ProcessedFile, processUploadedFile, formatBytes, SUPPORTED_ACCEPT_ATTRIBUTE } from '../utils/fileParser';
+import { ProcessedFile, processUploadedFile, formatBytes } from '../utils/fileParser';
 import { CurriculumAnalysisResult, ThemeConfig, TargetLanguage } from '../types/themes';
 import { DocumentCard } from './DocumentCard';
 import { MathView, RichMathText } from '../utils/mathRenderer';
@@ -34,8 +34,6 @@ import {
   AlertTriangle,
   Globe,
   Atom,
-  Music,
-  Video,
 } from 'lucide-react';
 
 interface ChatWorkspaceProps {
@@ -201,10 +199,6 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
         return <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-400" />;
       case 'image':
         return <ImageIcon className="w-3.5 h-3.5 text-purple-400" />;
-      case 'audio':
-        return <Music className="w-3.5 h-3.5 text-pink-400" />;
-      case 'video':
-        return <Video className="w-3.5 h-3.5 text-rose-400" />;
       case 'archive':
         return <Archive className="w-3.5 h-3.5 text-amber-400" />;
       default:
@@ -264,7 +258,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             Universal Drag & Drop Active
           </h3>
           <p className="text-sm text-cyan-200 max-w-md">
-            Drop any file: Documents (.pdf, .docx, .xlsx, .pptx), Code (.py, .ts, .cpp), Images (.png, .jpg), Audio (.mp3, .wav), or Videos (.mp4, .mov)
+            Drop any file: Code (.py, .ts, .cpp), Documents (.pdf, .docx, .md), Data (.csv, .xlsx), Images or Archives (.zip)
           </p>
         </div>
       )}
@@ -424,34 +418,8 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                       </div>
                     )}
 
-                    {/* Inline High Demand & Latency Automatic Model Switch Notification Banner */}
-                    {!isUser && msg.switchedDueToDemand && (
-                      <div className="mx-3.5 mt-3 p-3 rounded-xl bg-gradient-to-r from-blue-950/80 via-slate-900/90 to-cyan-950/80 border border-cyan-500/50 text-cyan-200 text-xs flex items-start gap-2.5 animate-in fade-in shadow-md">
-                        <Zap className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5 animate-pulse" />
-                        <div className="space-y-1 text-[11px] leading-relaxed">
-                          <div className="font-bold text-cyan-300 flex items-center gap-1.5">
-                            <span>محرك التجاوب السريع نشط (High Demand & Latency Failover) ⚡</span>
-                          </div>
-                          <p className="text-slate-300">
-                            {msg.failoverReason === 'slow_latency' ? (
-                              <>
-                                تم رصد استجابة بطيئة في قائمة انتظار خادم النموذج <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100">{msg.switchedFrom || 'Primary Model'}</code>. قام محرك المرونة بالتحويل التلقائي الفوري إلى <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100 font-bold">{msg.modelUsed}</code> {msg.failoverLatencyMs && <span className="text-[10px] text-cyan-400 font-mono">({msg.failoverLatencyMs}ms)</span>} لإتمام طلبك دون أي انقطاع.
-                              </>
-                            ) : (
-                              <>
-                                تم رصد ضغط سيرفر مرتفع أو وصول لحدود الاستخدام اللحظية على <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100">{msg.switchedFrom || 'Primary Model'}</code>. تم التحويل التلقائي الفوري إلى <code className="px-1 py-0.5 rounded bg-cyan-900/60 font-mono text-[10px] text-cyan-100 font-bold">{msg.modelUsed}</code> بنجاح.
-                              </>
-                            )}
-                          </p>
-                          <div className="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
-                            <span>✓ تم الحفاظ على 100% من سياق المحادثة والمرفقات وإتمام الطلب دون أي فشل.</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-
                     {/* Inline 404 Automatic Model Switch Notification Banner */}
-                    {!isUser && msg.switchedDueTo404 && !msg.switchedDueToDemand && (
+                    {!isUser && msg.switchedDueTo404 && (
                       <div className="mx-3.5 mt-3 p-3 rounded-xl bg-amber-950/70 border border-amber-800/80 text-amber-200 text-xs flex items-start gap-2.5 animate-in fade-in">
                         <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
                         <div className="space-y-1 text-[11px] leading-relaxed">
@@ -683,12 +651,11 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
             {/* Bottom Controls inside input box */}
             <div className="flex items-center justify-between pt-2 border-t border-slate-800/60 mt-1">
               <div className="flex items-center gap-1.5 sm:gap-2">
-                {/* Generic File Attachment Button supporting all documents, code, images, audio, and videos */}
+                {/* Generic File Attachment Button */}
                 <input
                   type="file"
                   ref={fileInputRef}
                   onChange={handleFileInputChange}
-                  accept={SUPPORTED_ACCEPT_ATTRIBUTE}
                   multiple
                   className="hidden"
                 />
@@ -696,7 +663,7 @@ export const ChatWorkspace: React.FC<ChatWorkspaceProps> = ({
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
                   className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors cursor-pointer"
-                  title="Attach any file (Documents, Code, Images, Audio, Video, Archives...)"
+                  title="Attach any file (Code, PDF, Word, Data, Images, ZIP...)"
                 >
                   <Paperclip className="w-4 h-4 text-slate-400" />
                   <span className="hidden sm:inline">Attach</span>

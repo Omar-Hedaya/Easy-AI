@@ -282,43 +282,22 @@ export default function App() {
           ? `Cross-Document Synthesis (${pdfFiles.length} Lecture PDFs)`
           : prompt.slice(0, 80) || attachments[0]?.name || 'Academic Curriculum Synthesis';
 
-        // Requirement 1 & 4: Direct Google Gemini API Call with Multimodal/PDF inputs and Demand/Latency Failover
-        const {
-          result: docResult,
-          modelUsed,
-          switchedDueTo404,
-          switchedDueToDemand,
-          switchedFrom,
-          failoverReason,
-          failoverLatencyMs,
-          durationMs,
-        } = await analyzeDirectCurriculum({
-          title: synthesisTitle,
-          discipline: 'Academic Science & Engineering',
-          targetLanguage: currentLanguage,
-          level: 'Undergraduate / Professional',
-          focus: 'Strict Anti-Repetition & Mathematical Precision',
-          rawContent,
-          model: selectedModel,
-          attachments: pdfFiles,
-        });
+        // Requirement 1 & 4: Direct Google Gemini API Call with Multimodal/PDF inputs
+        const { result: docResult, modelUsed, switchedDueTo404, switchedFrom } =
+          await analyzeDirectCurriculum({
+            title: synthesisTitle,
+            discipline: 'Academic Science & Engineering',
+            targetLanguage: currentLanguage,
+            level: 'Undergraduate / Professional',
+            focus: 'Strict Anti-Repetition & Mathematical Precision',
+            rawContent,
+            model: selectedModel,
+            attachments: pdfFiles,
+          });
 
         setLastModelUsed(modelUsed);
 
-        if (switchedDueToDemand) {
-          setSelectedModel(modelUsed);
-          if (failoverReason === 'slow_latency') {
-            showNotification(
-              'warning',
-              `⚡ تم رصد استجابة بطيئة على خادم ${switchedFrom} (${failoverLatencyMs}ms). تم التحويل التلقائي إلى ${modelUsed} بنجاح.`
-            );
-          } else {
-            showNotification(
-              'warning',
-              `⚡ ضغط سيرفر مرتفع على ${switchedFrom}. تم التحويل فوراً إلى ${modelUsed} وإتمام التلخيص بنجاح.`
-            );
-          }
-        } else if (switchedDueTo404) {
+        if (switchedDueTo404) {
           setSelectedModel(modelUsed);
           showNotification(
             'warning',
@@ -342,11 +321,7 @@ export default function App() {
           synthesizedDocument: docResult,
           modelUsed,
           switchedDueTo404,
-          switchedDueToDemand,
           switchedFrom,
-          failoverReason,
-          failoverLatencyMs,
-          durationMs,
         };
 
         setSessions((prev) =>
@@ -363,41 +338,18 @@ export default function App() {
           )
         );
       } else {
-        // Requirement 1 & 2: Direct Google Gemini API conversational inference with Google Search Grounding and High-Demand/Latency Failover
-        const {
-          result: replyText,
-          modelUsed,
-          switchedDueTo404,
-          switchedDueToDemand,
-          switchedFrom,
-          failoverReason,
-          failoverLatencyMs,
-          durationMs,
-          groundingMetadata,
-          isGrounded,
-        } = await sendDirectChatMessage({
-          messages: updatedMessages,
-          model: selectedModel,
-          targetLanguage: currentLanguage,
-          enableSearchGrounding: searchGrounding,
-        });
+        // Requirement 1 & 2: Direct Google Gemini API conversational inference with Google Search Grounding and 404 retry
+        const { result: replyText, modelUsed, switchedDueTo404, switchedFrom, groundingMetadata, isGrounded } =
+          await sendDirectChatMessage({
+            messages: updatedMessages,
+            model: selectedModel,
+            targetLanguage: currentLanguage,
+            enableSearchGrounding: searchGrounding,
+          });
 
         setLastModelUsed(modelUsed);
 
-        if (switchedDueToDemand) {
-          setSelectedModel(modelUsed);
-          if (failoverReason === 'slow_latency') {
-            showNotification(
-              'warning',
-              `⚡ تم رصد استجابة بطيئة على خادم ${switchedFrom} (${failoverLatencyMs}ms). تم التحويل التلقائي فوراً إلى ${modelUsed}.`
-            );
-          } else {
-            showNotification(
-              'warning',
-              `⚡ ضغط سيرفر مرتفع على ${switchedFrom}. تم التحويل الفوري بنجاح إلى ${modelUsed} دون انقطاع.`
-            );
-          }
-        } else if (switchedDueTo404) {
+        if (switchedDueTo404) {
           setSelectedModel(modelUsed);
           showNotification(
             'warning',
@@ -414,11 +366,7 @@ export default function App() {
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           modelUsed,
           switchedDueTo404,
-          switchedDueToDemand,
           switchedFrom,
-          failoverReason,
-          failoverLatencyMs,
-          durationMs,
           groundingMetadata,
           isGrounded,
         };

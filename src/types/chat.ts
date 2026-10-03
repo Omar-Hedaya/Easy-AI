@@ -38,10 +38,7 @@ export interface ChatMessage {
   synthesizedDocument?: CurriculumAnalysisResult;
   modelUsed?: string;
   switchedDueTo404?: boolean;
-  switchedDueToDemand?: boolean;
   switchedFrom?: string;
-  failoverReason?: 'high_demand' | 'slow_latency' | 'rate_limit' | 'not_found' | 'server_error';
-  failoverLatencyMs?: number;
   failoverNotice?: string;
   isStreaming?: boolean;
   durationMs?: number;

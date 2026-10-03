@@ -45,259 +45,168 @@ Follow these strict output rules:
 export interface DirectApiResult<T = string> {
   result: T;
   modelUsed: string;
-  switchedDueTo404?: boolean;
-  switchedDueToDemand?: boolean;
+  switchedDueTo404: boolean;
   switchedFrom?: string;
-  failoverReason?: 'high_demand' | 'slow_latency' | 'rate_limit' | 'not_found' | 'server_error';
-  failoverLatencyMs?: number;
-  durationMs?: number;
   groundingMetadata?: GroundingMetadata;
   isGrounded?: boolean;
 }
 
 /**
- * Makes a direct POST request to Google Generative Language API.
- * Automatically detects:
- * 1. Slow response latency / hangs (soft timeout threshold: 7500ms).
- * 2. Server high demand (HTTP 429 RESOURCE_EXHAUSTED / Rate Limit, HTTP 503 UNAVAILABLE / High Load, 502/504 Gateway).
- * 3. Model unavailability (HTTP 404 NOT_FOUND).
- * Immediately switches to an alternate model ('gemini-3.7-flash', 'gemini-3.1-flash-lite') or alternate endpoint without failing.
+ * Makes a direct POST request to Google Generative Language API:
+ * https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={API_KEY}
+ * Disables local proxies, non-existent serverless routes, or unconfigured external fallback providers.
+ * Catches HTTP 404 (Not Found / Model Unavailable) and immediately retries using 'gemini-3.7-flash'.
  */
 export async function callGoogleGenerativeLanguageApi(
   requestedModel: string,
-  payload: any,
-  options?: {
-    latencyThresholdMs?: number;
-  }
-): Promise<{
-  data: any;
-  modelUsed: string;
-  switchedDueTo404: boolean;
-  switchedDueToDemand: boolean;
-  switchedFrom?: string;
-  failoverReason?: 'high_demand' | 'slow_latency' | 'rate_limit' | 'not_found' | 'server_error';
-  failoverLatencyMs?: number;
-  durationMs: number;
-}> {
+  payload: any
+): Promise<{ data: any; modelUsed: string; switchedDueTo404: boolean; switchedFrom?: string }> {
+  // Requirement 3: Read API key strictly via import.meta.env.VITE_GEMINI_API_KEY
+  // If missing, display alert: "API Key is missing in environment variables"
   const apiKey = getGeminiApiKey();
-  const overallStart = performance.now();
 
-  const initialModel = requestedModel || 'gemini-3.8-flash';
-
-  // Resilient model fallback ladder
-  const modelLadder = Array.from(
-    new Set([
-      initialModel,
-      'gemini-3.7-flash',
-      'gemini-3.1-flash-lite',
-      'gemini-flash-latest',
-    ])
-  );
-
-  // Endpoint variants for high-availability routing
-  const endpointBases = [
-    'https://generativelanguage.googleapis.com/v1beta/models',
-    'https://generativelanguage.googleapis.com/v1/models',
-  ];
-
-  let lastError: any = null;
-  let failoverReason: 'high_demand' | 'slow_latency' | 'rate_limit' | 'not_found' | 'server_error' | undefined = undefined;
+  let activeModel = requestedModel || 'gemini-3.8-flash';
   let switchedDueTo404 = false;
-  let switchedDueToDemand = false;
   let switchedFrom: string | undefined = undefined;
 
-  for (let i = 0; i < modelLadder.length; i++) {
-    const currentModel = modelLadder[i];
-    const isInitialAttempt = i === 0;
+  const makeRequest = async (model: string, currentPayload: any) => {
+    // Requirement 1: Direct Google Gemini API Call
+    const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+    return fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(currentPayload),
+    });
+  };
 
-    // Latency cutoff: 7500ms for first candidate to avoid keeping the user waiting on overloaded queues
-    const latencyTimeoutMs = isInitialAttempt
-      ? options?.latencyThresholdMs || 7500
-      : 12000;
+  try {
+    let response = await makeRequest(activeModel, payload);
 
-    for (let epIdx = 0; epIdx < endpointBases.length; epIdx++) {
-      const endpointBase = endpointBases[epIdx];
-      const endpoint = `${endpointBase}/${currentModel}:generateContent?key=${apiKey}`;
+    // Requirement 2: If gemini-3.8-flash (or requested model) returns 404 from Google,
+    // catch that error and immediately retry the request using 'gemini-3.7-flash' as an in-code automatic fallback.
+    if (response.status === 404) {
+      console.warn(
+        `[Google Gemini API] Model "${activeModel}" returned 404 Not Found. Immediately retrying with gemini-3.7-flash...`
+      );
+      switchedDueTo404 = true;
+      switchedFrom = activeModel;
+      activeModel = activeModel === 'gemini-3.7-flash' ? 'gemini-3.6-flash' : 'gemini-3.7-flash';
 
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => {
-        controller.abort();
-      }, latencyTimeoutMs);
+      response = await makeRequest(activeModel, payload);
 
-      const attemptStart = performance.now();
-
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
-          signal: controller.signal,
-        });
-
-        clearTimeout(timeoutId);
-
-        // Detect HTTP 404 (Model Not Found)
-        if (response.status === 404) {
-          console.warn(
-            `[Resiliency Engine] Model "${currentModel}" returned 404 Not Found at ${endpointBase}. Switching to alternate model...`
-          );
-          switchedDueTo404 = true;
-          switchedFrom = initialModel;
-          failoverReason = 'not_found';
-          break; // Move to next model in ladder
-        }
-
-        // Detect High Demand: HTTP 429 (Rate Limit / Quota Exhaustion)
-        if (response.status === 429) {
-          console.warn(
-            `[Resiliency Engine] High demand / rate limit (HTTP 429) detected on "${currentModel}". Switching to alternate model...`
-          );
-          switchedDueToDemand = true;
-          switchedFrom = initialModel;
-          failoverReason = 'rate_limit';
-          break; // Move to next model in ladder
-        }
-
-        // Detect High Demand / Outage: HTTP 503 (Unavailable) / 502 / 504 / 500
-        if (response.status === 503 || response.status === 502 || response.status === 504 || response.status === 500) {
-          console.warn(
-            `[Resiliency Engine] Server high demand / temporary outage (HTTP ${response.status}) on "${currentModel}". Switching to alternate model...`
-          );
-          switchedDueToDemand = true;
-          switchedFrom = initialModel;
-          failoverReason = response.status === 503 ? 'high_demand' : 'server_error';
-          break; // Move to next model in ladder
-        }
-
-        // Detect Tool Incompatibility (e.g. 400 with tool mismatch on alternate models/endpoints)
-        if (!response.ok && payload.tools && response.status === 400) {
-          const errBody = await response.json().catch(() => ({}));
-          const errMsg = errBody?.error?.message || '';
-          if (errMsg.includes('tool') || errMsg.includes('search') || errMsg.includes('Search')) {
-            console.warn(`[Resiliency Engine] Tools not supported on ${currentModel} (${errMsg}). Retrying without tools...`);
-            const payloadNoTools = { ...payload };
-            delete payloadNoTools.tools;
-            const retryRes = await fetch(endpoint, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payloadNoTools),
-            });
-            if (retryRes.ok) {
-              const data = await retryRes.json();
-              const durationMs = Math.round(performance.now() - overallStart);
-              return {
-                data,
-                modelUsed: currentModel,
-                switchedDueTo404: currentModel !== initialModel && failoverReason === 'not_found',
-                switchedDueToDemand: currentModel !== initialModel && failoverReason !== 'not_found',
-                switchedFrom: currentModel !== initialModel ? initialModel : undefined,
-                failoverReason: currentModel !== initialModel ? failoverReason : undefined,
-                failoverLatencyMs: currentModel !== initialModel ? durationMs : undefined,
-                durationMs,
-              };
-            }
-          }
-        }
-
-        if (!response.ok) {
-          const errorBody = await response.json().catch(() => ({}));
-          const errMessage = errorBody?.error?.message || `Google Gemini API error (HTTP ${response.status})`;
-          throw new Error(errMessage);
-        }
-
-        // Successful request!
-        const data = await response.json();
-        const durationMs = Math.round(performance.now() - overallStart);
-
-        return {
-          data,
-          modelUsed: currentModel,
-          switchedDueTo404: currentModel !== initialModel && failoverReason === 'not_found',
-          switchedDueToDemand: currentModel !== initialModel && failoverReason !== 'not_found',
-          switchedFrom: currentModel !== initialModel ? initialModel : undefined,
-          failoverReason: currentModel !== initialModel ? failoverReason : undefined,
-          failoverLatencyMs: currentModel !== initialModel ? durationMs : undefined,
-          durationMs,
-        };
-      } catch (err: any) {
-        clearTimeout(timeoutId);
-        lastError = err;
-        const elapsed = Math.round(performance.now() - attemptStart);
-
-        const isAbortOrTimeout =
-          err?.name === 'AbortError' ||
-          err?.name === 'TimeoutError' ||
-          err?.message?.includes('aborted') ||
-          err?.message?.includes('timeout') ||
-          elapsed >= latencyTimeoutMs;
-
-        if (isAbortOrTimeout) {
-          console.warn(
-            `[Resiliency Engine] Slow response latency detected on "${currentModel}" (${elapsed}ms >= ${latencyTimeoutMs}ms). Instantly switching to alternate model...`
-          );
-          switchedDueToDemand = true;
-          switchedFrom = initialModel;
-          failoverReason = 'slow_latency';
-          break; // Move to next model in ladder immediately
-        }
-
-        // If endpoint 1 failed with a network error, try endpoint 2 before changing model
-        if (epIdx < endpointBases.length - 1) {
-          console.warn(`[Resiliency Engine] Endpoint ${endpointBase} failed (${err.message}). Trying alternate endpoint...`);
-          continue;
-        }
-
-        // If generic error, flag demand/server error and advance ladder
-        switchedDueToDemand = true;
-        switchedFrom = initialModel;
-        if (!failoverReason) failoverReason = 'server_error';
+      // If still 404, fallback to gemini-3.1-flash-lite
+      if (response.status === 404) {
+        console.warn(
+          `[Google Gemini API] Model "${activeModel}" returned 404. Retrying with gemini-3.1-flash-lite...`
+        );
+        activeModel = 'gemini-3.1-flash-lite';
+        response = await makeRequest(activeModel, payload);
       }
     }
-  }
 
-  // If every model in the fallback ladder failed, throw the last encountered error
-  console.error('[Resiliency Engine] Exhausted all model and endpoint fallbacks.', lastError);
-  throw lastError || new Error('All Gemini model endpoints are temporarily unavailable due to severe network or server load.');
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({}));
+      const errMessage = errorBody?.error?.message || `Google Gemini API error (HTTP ${response.status})`;
+
+      // If the error was triggered by tools and fallback is needed
+      if (payload.tools && (errMessage.includes('tool') || errMessage.includes('search') || errMessage.includes('Search') || response.status === 400)) {
+        console.warn(`[Google Gemini API] Tools error encountered (${errMessage}). Gracefully retrying without tools...`);
+        const payloadWithoutTools = { ...payload };
+        delete payloadWithoutTools.tools;
+        const retryRes = await makeRequest(activeModel, payloadWithoutTools);
+        if (retryRes.ok) {
+          const data = await retryRes.json();
+          return {
+            data,
+            modelUsed: activeModel,
+            switchedDueTo404,
+            switchedFrom,
+          };
+        }
+      }
+
+      throw new Error(errMessage);
+    }
+
+    const data = await response.json();
+    return {
+      data,
+      modelUsed: activeModel,
+      switchedDueTo404,
+      switchedFrom,
+    };
+  } catch (error: any) {
+    const errorMsg = error?.message || String(error);
+    // If the error indicates a 404 from Google
+    if (
+      (errorMsg.includes('404') || errorMsg.includes('NOT_FOUND') || errorMsg.includes('not found')) &&
+      activeModel !== 'gemini-3.7-flash'
+    ) {
+      console.warn(
+        `[Google Gemini API] Caught 404 error for ${activeModel}: ${errorMsg}. Retrying with gemini-3.7-flash...`
+      );
+      switchedDueTo404 = true;
+      switchedFrom = activeModel;
+      activeModel = 'gemini-3.7-flash';
+
+      const retryRes = await makeRequest(activeModel, payload);
+      if (!retryRes.ok) {
+        const errJson = await retryRes.json().catch(() => ({}));
+        throw new Error(errJson?.error?.message || `Retry failed with HTTP ${retryRes.status}`);
+      }
+      const data = await retryRes.json();
+      return {
+        data,
+        modelUsed: activeModel,
+        switchedDueTo404,
+        switchedFrom,
+      };
+    }
+    throw error;
+  }
 }
 
 /**
- * Requirement 4: Handle Text & Multimodal (PDF, Image, Audio, Video, Code, Document) inputs.
- * Reads documents, images, audio, and videos as binary Base64 with proper MIME types in inlineData,
- * and reads code/text files as raw UTF-8 text parts for the Gemini API.
+ * Requirement 4: Handle Text & Multimodal/PDF inputs.
+ * Supports simple text prompts as well as PDF uploads (sent as Base64 in inlineData with mimeType: 'application/pdf').
  */
 export function buildMessageParts(msg: { content?: string; attachments?: ProcessedFile[] }): any[] {
   const parts: any[] = [];
 
   if (msg.attachments && Array.isArray(msg.attachments) && msg.attachments.length > 0) {
     for (const att of msg.attachments) {
-      const mime = att.mimeType || att.type || '';
-      const isMedia =
-        mime === 'application/pdf' ||
-        mime.startsWith('image/') ||
-        mime.startsWith('audio/') ||
-        mime.startsWith('video/');
+      const isPdf =
+        att.mimeType === 'application/pdf' ||
+        att.extension === 'pdf' ||
+        att.type === 'application/pdf';
 
-      // Multimodal Media (PDF, Image, Audio, Video): sent as Base64 in inlineData
-      if (att.base64Data && isMedia) {
+      // PDF Uploads: sent as Base64 in inlineData with mimeType: 'application/pdf'
+      if (att.base64Data && isPdf) {
         const cleanBase64 = att.base64Data.replace(/^data:[^;]+;base64,/, '');
         parts.push({
           inlineData: {
-            mimeType: mime,
+            mimeType: 'application/pdf',
+            data: cleanBase64,
+          },
+        });
+      } else if (att.base64Data && att.mimeType && att.mimeType.startsWith('image/')) {
+        // Image Uploads: sent as Base64 in inlineData
+        const cleanBase64 = att.base64Data.replace(/^data:[^;]+;base64,/, '');
+        parts.push({
+          inlineData: {
+            mimeType: att.mimeType,
             data: cleanBase64,
           },
         });
       }
 
-      // Code & Text files (or extracted document text): sent as raw UTF-8 text parts
+      // Extracted text content from file (if available) for OCR/textual context
       if (att.textContent && att.textContent.trim()) {
-        const isPureMedia = mime.startsWith('image/') || mime.startsWith('audio/') || mime.startsWith('video/');
-        if (!isPureMedia || att.fileCategory === 'code' || att.fileCategory === 'data' || att.fileCategory === 'document') {
-          parts.push({
-            text: `[Attached File: "${att.name}" (${mime || att.extension || 'file'})]\n${att.textContent}`,
-          });
-        }
+        parts.push({
+          text: `[Attached Ingested Content: "${att.name}" (${att.type || 'file'})]\n${att.textContent}`,
+        });
       }
     }
   }
@@ -359,16 +268,10 @@ ACADEMIC GOOGLE SEARCH GROUNDING ACTIVE:
     payload.tools = [{ googleSearch: {} }];
   }
 
-  const {
-    data,
-    modelUsed,
-    switchedDueTo404,
-    switchedDueToDemand,
-    switchedFrom,
-    failoverReason,
-    failoverLatencyMs,
-    durationMs,
-  } = await callGoogleGenerativeLanguageApi(model, payload);
+  const { data, modelUsed, switchedDueTo404, switchedFrom } = await callGoogleGenerativeLanguageApi(
+    model,
+    payload
+  );
 
   const replyText =
     data?.candidates?.[0]?.content?.parts
@@ -387,11 +290,7 @@ ACADEMIC GOOGLE SEARCH GROUNDING ACTIVE:
     result: replyText,
     modelUsed,
     switchedDueTo404,
-    switchedDueToDemand,
     switchedFrom,
-    failoverReason,
-    failoverLatencyMs,
-    durationMs,
     groundingMetadata,
     isGrounded,
   };
@@ -435,21 +334,27 @@ Synthesize this curriculum into a 100% exhaustive, professionally structured aca
 
   const userParts: any[] = [];
 
-  // Multimodal attachments (Images, Audio, Video, PDF, Documents)
+  // Multimodal & PDF attachments
   if (attachments && Array.isArray(attachments) && attachments.length > 0) {
     for (const att of attachments) {
-      const mime = att.mimeType || att.type || '';
-      const isMedia =
-        mime === 'application/pdf' ||
-        mime.startsWith('image/') ||
-        mime.startsWith('audio/') ||
-        mime.startsWith('video/');
+      const isPdf =
+        att.mimeType === 'application/pdf' ||
+        att.extension === 'pdf' ||
+        att.type === 'application/pdf';
 
-      if (att.base64Data && isMedia) {
+      if (att.base64Data && isPdf) {
         const cleanBase64 = att.base64Data.replace(/^data:[^;]+;base64,/, '');
         userParts.push({
           inlineData: {
-            mimeType: mime,
+            mimeType: 'application/pdf',
+            data: cleanBase64,
+          },
+        });
+      } else if (att.base64Data && att.mimeType && att.mimeType.startsWith('image/')) {
+        const cleanBase64 = att.base64Data.replace(/^data:[^;]+;base64,/, '');
+        userParts.push({
+          inlineData: {
+            mimeType: att.mimeType,
             data: cleanBase64,
           },
         });
@@ -488,16 +393,10 @@ Output must be strictly valid JSON without any markdown formatting wrappers.`,
     },
   };
 
-  const {
-    data,
-    modelUsed,
-    switchedDueTo404,
-    switchedDueToDemand,
-    switchedFrom,
-    failoverReason,
-    failoverLatencyMs,
-    durationMs,
-  } = await callGoogleGenerativeLanguageApi(model, payload);
+  const { data, modelUsed, switchedDueTo404, switchedFrom } = await callGoogleGenerativeLanguageApi(
+    model,
+    payload
+  );
 
   let rawJsonText =
     data?.candidates?.[0]?.content?.parts
@@ -524,10 +423,6 @@ Output must be strictly valid JSON without any markdown formatting wrappers.`,
     result: docResult,
     modelUsed,
     switchedDueTo404,
-    switchedDueToDemand,
     switchedFrom,
-    failoverReason,
-    failoverLatencyMs,
-    durationMs,
   };
 }
